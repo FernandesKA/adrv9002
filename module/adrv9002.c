@@ -28,6 +28,8 @@
 #include "adrv9002.h"
 #include "adrv9002_ioctl.h"
 
+#include "tes/initialize.h"
+
 #define DRIVER_NAME "adrv9002"
 #define DRIVER_VERSION "0.1.0"
 /*private device structure*/
@@ -40,6 +42,15 @@ struct adrv9002_priv *g_priv;
 
 static void adrv9002_hw_reset(struct adrv9002_priv *priv)
 {
+
+    dev_dbg(&priv->spi->dev, "DIRTY HACK! Write into regs PL\n");
+    void __iomem *regs = ioremap(0x43c00000, 4);
+    writel(0x00u, regs);
+    writel(0x03u, regs);
+    iounmap(regs);
+
+   dev_dbg(&priv->spi->dev, "DIRTY HACK! Write into regs PL ok. TODO: Need to remove\n");
+
     if (!priv->reset_gpio)
         return;
 
@@ -154,37 +165,60 @@ static int adrv9002_spi_xfer(struct adrv9002_priv *priv, const u8 *tx, u8 *rx, s
 static int adrv9002_do_init(struct adrv9002_priv *priv,
                             struct adrv9002_init_params *params)
 {
-    int ret = 0;
 
+    err_free_profile:
+    int ret =  0;
     dev_info(&priv->spi->dev, "Starting initialization...\n");
 
     if (!priv) {
+        printk(KERN_ERR "priv is NULL\n");
         return -EINVAL;
     }
 
+    priv->adrv9001Device = kzalloc(sizeof(adi_adrv9001_Device_t), GFP_KERNEL);
     if (!priv->adrv9001Device) {
+        printk(KERN_ERR "adrv9001Device is NULL\n");
         return -EINVAL;
     }
     
+    priv->adrv9001Init = kzalloc(sizeof(adi_adrv9001_Init_t), GFP_KERNEL);
     if (!priv->adrv9001Init) {
+        printk(KERN_ERR "adrv9001Init is NULL\n");
         return -EINVAL;
     }
 
-    if (!params->profile_buf) {
-        return -EINVAL;
-    }
+    printk(KERN_ERR "we are here\n");
 
-    /* TODO: Hardware reset */
-    adrv9002_hw_reset(priv);
+    // dev_info(&priv->spi->dev, "Make reset\n");
+    // adrv9002_hw_reset(priv);
 
     /* TODO: Load profile JSON */
-    ret = adi_adrv9001_profileutil_Parse(priv->adrv9001Device, priv->adrv9001Init, params->profile_buf, params->stream_buf_len);
+    dev_info(&priv->spi->dev, "Begin profile parsing \n");
+    ret = adi_adrv9001_profileutil_Parse(priv->adrv9001Device, priv->adrv9001Init, params->profile_buf, params->profile_buf_len);
 
     if (ret) {
         dev_err(&priv->spi->dev, "Profile parsing failed: %d\n", ret);
         return ret;
     }
 
+    if (priv->hal_context) {
+        priv->adrv9001Device->common.devHalInfo = priv->hal_context;
+    } else {
+        dev_err(&priv->spi->dev, "HAL context is NULL\n");
+        return -EINVAL;
+    }
+
+    dev_err(&priv->spi->dev, "DIRTY HACK! Write into regs PL\n");
+    void __iomem *regs = ioremap(0x43c00000, 4);
+    writel(0x03u, regs);
+    iounmap(regs);
+    dev_err(&priv->spi->dev, "DIRTY HACK! Write into regs PL ok. TODO: Need to remove\n");
+
+    ret = initialize(priv->adrv9001Device, priv->adrv9001Init, params->stream_buf, params->stream_buf_len);
+    if (ret) {
+        dev_err(&priv->spi->dev, "Initialization failed: %d\n", ret);
+        return ret;
+    }
     /* TODO: Load stream binary */
     /* ret = adrv9002_load_stream(priv, params->stream_path); */
 
@@ -398,32 +432,34 @@ static long adrv9002_ioctl(struct file *filp, unsigned int cmd,
         char *kernel_stream_buf = kmalloc(params.stream_buf_len, GFP_KERNEL);
         if (!kernel_stream_buf) {
             dev_err(&priv->spi->dev, "Failed to allocate stream buffer\n");
-            kfree(kernel_profile_buf);
+            goto err_free_profile;
             ret = -ENOMEM;
             break;
         }
 
         if (copy_from_user(kernel_profile_buf, params.profile_buf, params.profile_buf_len)) {
             dev_err(&priv->spi->dev, "Failed to copy profile buffer\n");
-            kfree(kernel_profile_buf);
-            kfree(kernel_stream_buf);
+            goto err_free_all;
             ret = -EFAULT;
             break;
         }
 
         if (copy_from_user(kernel_stream_buf, params.stream_buf, params.stream_buf_len)) {
             dev_err(&priv->spi->dev, "Failed to copy stream buffer\n");
-            kfree(kernel_profile_buf);
-            kfree(kernel_stream_buf);
+            goto err_free_all;
             ret = -EFAULT;
             break;
         }
 
+        params.profile_buf = kernel_profile_buf;
+        params.stream_buf = kernel_stream_buf;
+
         ret = adrv9002_do_init(priv, &params);
 
-        kfree(kernel_profile_buf);
+        err_free_all:
         kfree(kernel_stream_buf);
-
+        err_free_profile:
+        kfree(kernel_profile_buf);
         break;
     }
 
@@ -568,12 +604,18 @@ static int adrv9002_probe(struct spi_device *spi)
     mutex_init(&priv->lock);
 
     /* Get GPIO from Device Tree */
-    priv->reset_gpio = devm_gpiod_get_optional(&spi->dev, "reset",
+    priv->reset_gpio = devm_gpiod_get_optional(&spi->dev, "reset-gpio",
                                                GPIOD_OUT_LOW);
     if (IS_ERR(priv->reset_gpio))
     {
         ret = PTR_ERR(priv->reset_gpio);
         dev_err(&spi->dev, "Failed to get reset GPIO: %d\n", ret);
+        return ret;
+    }
+
+    ret = adrv9002_hal_init(priv, priv->spi, priv->reset_gpio);
+    if (ret) {
+        dev_err(&spi->dev, "HAL init failed\n");
         return ret;
     }
 
@@ -597,11 +639,12 @@ static int adrv9002_probe(struct spi_device *spi)
     }
 
     /* Create device class */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0)
     priv->class = class_create(THIS_MODULE, DRIVER_NAME);
 #else
     priv->class = class_create(DRIVER_NAME);
 #endif
+
     if (IS_ERR(priv->class))
     {
         ret = PTR_ERR(priv->class);
@@ -653,7 +696,15 @@ static void adrv9002_remove(struct spi_device *spi)
 
     dev_info(&spi->dev, "Removing ADRV9002 driver\n");
 
+
     /* TODO: Cleanup vendor API structures */
+    if (priv->adrv9001Device) {
+        kfree(priv->adrv9001Device);
+    }
+
+    if (priv->adrv9001Init) {
+        kfree(priv->adrv9001Init);
+    }
 
     device_destroy(priv->class, priv->devt);
     class_destroy(priv->class);

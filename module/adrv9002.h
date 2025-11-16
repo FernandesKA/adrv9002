@@ -17,6 +17,7 @@
 #include "adi_adrv9001_profileutil.h"
 #include "adi_common_error.h"
 #include "adi_common_hal.h"
+#include "adrv9002_hal.h"
 
 struct spi_dev {
     struct spi_device *spi;
@@ -30,6 +31,7 @@ struct adrv9002_priv
     struct class *class;
     struct device *device;
     struct spi_dev spi_dev;
+    void *hal_context;
     adi_common_ApiVersion_t api_version;
     adi_adrv9001_ArmVersion_t arm_version;
     adi_adrv9001_SiliconVersion_t silicon_version;
