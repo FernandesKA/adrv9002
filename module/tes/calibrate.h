@@ -33,8 +33,7 @@ extern "C" {
 #include "adi_adrv9001_spi.h"
 #include "adi_adrv9001_ssi.h"
 #include "adi_adrv9001_tx.h"
-#include <linux/kernel.h>
-
+#include <linux/types.h>
 extern adi_adrv9001_RxGainTableRow_t calibrate_gainTableRows_8[];
 extern adi_adrv9001_RxGainTableRow_t calibrate_gainTableRows_10[];
 

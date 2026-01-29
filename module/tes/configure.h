@@ -35,7 +35,7 @@ extern "C" {
 #include "adi_adrv9001_rx.h"
 #include "adi_adrv9001_rx_gaincontrol.h"
 #include "adi_adrv9001_tx.h"
-
+#include <linux/types.h>
 extern adi_adrv9001_GainControlCfg_t configure_agcCfg_3;
 
 #define ADI_HANDLE_ERROR(error_code) if (0 != error_code) { return error_code; }

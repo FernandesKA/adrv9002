@@ -34,11 +34,15 @@
 #include "adi_adrv9001_profileutil.h"
 #include "adrv9001_Init_t_parser.h"
 
+#ifndef ADI_DYNAMIC_PROFILE_LOAD
+#define ADI_DYNAMIC_PROFILE_LOAD
+#endif
+
 #ifdef ADI_DYNAMIC_PROFILE_LOAD
 
 #define ADI_ADRV9001_TOKEN_MAX_LENGTH	32
 
-int32_t adi_adrv9001_profileutil_Parse(adi_adrv9001_Device_t *device, adi_adrv9001_Init_t *init, const char * jsonBuffer, uint32_t length)
+int32_t adi_adrv9001_profileutil_Parse(adi_adrv9001_Device_t *device, adi_adrv9001_Init_t *init, char * jsonBuffer, uint32_t length) 
 {
     uint16_t ii = 0; 
     int16_t numTokens = 0; 

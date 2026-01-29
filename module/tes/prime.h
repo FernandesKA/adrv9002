@@ -29,7 +29,7 @@ extern "C" {
 #endif
 #include "adi_adrv9001_radio.h"
 #include "adi_adrv9001_tx.h"
-#include <linux/kernel.h>
+#include <linux/types.h>
 
 #define ADI_HANDLE_ERROR(error_code) if (0 != error_code) { return error_code; }
 

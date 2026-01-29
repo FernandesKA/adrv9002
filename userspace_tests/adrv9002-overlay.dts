@@ -1,0 +1,26 @@
+/dts-v1/;
+
+/plugin/;
+
+&spi1 {
+    #address-cells = <1>;
+    #size-cells = <0>;
+    status = "okay";
+
+    adrv9002@0 {
+        compatible = "adi,adrv9002";
+        reg = <0x00>;
+        spi-max-frequency = <10000000>;
+        #address-cells = <0x01>;
+        #size-cells = <0x00>;
+
+        /* Reset active low на GPIO0_107 */
+        reset-gpios = <&gpio0 107 1>;
+
+        /* LNA enable active low на GPIO0_108..111 */
+        amp-gpios = <&gpio0 54 1>,
+                    <&gpio0 55 1>,
+                    <&gpio0 56 1>,
+                    <&gpio0 57 1>;
+    };
+};

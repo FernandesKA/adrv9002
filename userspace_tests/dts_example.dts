@@ -1,0 +1,36 @@
+
+#define GPIO_ACTIVE_HIGH 0
+#define GPIO_ACTIVE_LOW 1
+
+spi@e0006000 {
+	compatible = "xlnx,zynq-spi-r1p6";
+	reg = <0xe0006000 0x1000>;
+	status = "okay";
+	interrupt-parent = <0x04>;
+	interrupts = <0x00 0x1a 0x04>;
+	clocks = <0x01 0x19 0x01 0x22>;
+	clock-names = "ref_clk", "pclk";
+	#address-cells = <0x01>;
+	#size-cells = <0x00>;
+	bits-per-word = <0x08>;
+	is-decoded-cs = <0x00>;
+	num-cs = <0x01>;
+	phandle = <0x21>;
+	
+	adrv9002@0 {
+		compatible = "adi,adrv9002";
+		reg = <0x00>;
+		spi-max-frequency = <0x989680>;
+		#address-cells = <0x01>;
+		#size-cells = <0x00>;
+		phandle = <0x22>;
+		// reset-reg = <0x43C00000 0x03 0x00 0x03>; /* addr - mask - reset - unreset */
+		/* reset pin: make sure controller and index are correct for your SoC */
+		reset-gpios = <&gpio0 76 GPIO_ACTIVE_LOW>;
+		/* LNA control pins: driver expects property name "amp-gpios" */
+		amp-gpios = <&gpio0 108 GPIO_ACTIVE_HIGH>,
+		    <&gpio0 109 GPIO_ACTIVE_HIGH>,
+		    <&gpio0 110 GPIO_ACTIVE_HIGH>,
+		    <&gpio0 111 GPIO_ACTIVE_HIGH>;
+	};
+};

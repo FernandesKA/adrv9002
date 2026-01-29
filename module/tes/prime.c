@@ -27,7 +27,7 @@ int prime(adi_adrv9001_Device_t * adrv9001Device_0)
 {
 	int32_t error_code = 0;
 
-	printk(KERN_NOTICE "Priming channels.");
+	//printf("%s", "Priming channels.");
 	ADI_HANDLE_ERROR(error_code);
 
 	error_code = adi_adrv9001_Tx_AttenuationMode_Set(adrv9001Device_0, ADI_CHANNEL_1, ADI_ADRV9001_TX_ATTENUATION_CONTROL_MODE_SPI);
@@ -36,16 +36,16 @@ int prime(adi_adrv9001_Device_t * adrv9001Device_0)
 	error_code = adi_adrv9001_Tx_AttenuationMode_Set(adrv9001Device_0, ADI_CHANNEL_2, ADI_ADRV9001_TX_ATTENUATION_CONTROL_MODE_SPI);
 	ADI_HANDLE_ERROR(error_code);
 
-	error_code = adi_adrv9001_Radio_Channel_Prime(adrv9001Device_0, ADI_RX, ADI_CHANNEL_1, true);
+	error_code = adi_adrv9001_Radio_Channel_ToPrimed(adrv9001Device_0, ADI_RX, ADI_CHANNEL_1);
 	ADI_HANDLE_ERROR(error_code);
 
-	error_code = adi_adrv9001_Radio_Channel_Prime(adrv9001Device_0, ADI_RX, ADI_CHANNEL_1, true);
+	error_code = adi_adrv9001_Radio_Channel_ToPrimed(adrv9001Device_0, ADI_RX, ADI_CHANNEL_2);
 	ADI_HANDLE_ERROR(error_code);
 
-	error_code = adi_adrv9001_Radio_Channel_Prime(adrv9001Device_0, ADI_RX, ADI_CHANNEL_1, true);
+	error_code = adi_adrv9001_Radio_Channel_ToPrimed(adrv9001Device_0, ADI_TX, ADI_CHANNEL_1);
 	ADI_HANDLE_ERROR(error_code);
 
-	error_code = adi_adrv9001_Radio_Channel_Prime(adrv9001Device_0, ADI_RX, ADI_CHANNEL_1, true);
+	error_code = adi_adrv9001_Radio_Channel_ToPrimed(adrv9001Device_0, ADI_TX, ADI_CHANNEL_2);
 	ADI_HANDLE_ERROR(error_code);
 
 

@@ -10,7 +10,7 @@
 #include "adi_adrv9001_ssi.h"
 #include "adi_adrv9001_stream.h"
 #include "adi_adrv9001_tx.h"
-#include <linux/kernel.h>
+#include <linux/types.h>
 adi_adrv9001_GpioCtrlInitCfg_t initialize_gpioCtrlInitCfg_26 = { 
 		.tx_ext_frontend_ctrl = { { 
 		.pin = ADI_ADRV9001_GPIO_UNASSIGNED, 

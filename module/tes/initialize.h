@@ -39,8 +39,7 @@ extern "C" {
 #include "adi_adrv9001_ssi.h"
 #include "adi_adrv9001_stream.h"
 #include "adi_adrv9001_tx.h"
-#include <linux/kernel.h>
-
+#include <linux/types.h>
 extern uint8_t initialize_binary_11[];
 extern adi_adrv9001_RxGainTableRow_t initialize_gainTableRows_14[];
 extern adi_adrv9001_RxGainTableRow_t initialize_gainTableRows_15[];

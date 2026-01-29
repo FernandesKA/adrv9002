@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <stdint.h>
+#include <getopt.h>
 
 #include "adrv9002_ioctl.h"
 
@@ -25,6 +26,10 @@
 
 /* Global device file descriptor */
 static int g_fd = -1;
+
+/* Default paths */
+static const char *g_profile_path = "./etc/pfile.json";
+static const char *g_stream_path = "./etc/stream.bin";
 
 /**
  * Print error message with color
@@ -87,7 +92,7 @@ static int adrv9002_init(const char *profile, const char *stream)
 
     memset(&params, 0, sizeof(params));
 
-    uint8_t *profile_buf = malloc(64 * 1024);
+    char *profile_buf = malloc(64 * 1024);
     if (!profile_buf) {
         print_error("Failed to allocate memory for profile");
         return -1;
@@ -102,7 +107,7 @@ static int adrv9002_init(const char *profile, const char *stream)
     size_t profile_buf_size = fread(profile_buf, 1, 64 * 1024, fp);
     fclose(fp);
 
-    uint8_t *stream_buf = malloc(64 * 1024);
+    char *stream_buf = malloc(64 * 1024);
     if (!stream_buf) {
         print_error("Failed to allocate memory for stream");
         free(profile_buf);
@@ -298,6 +303,47 @@ static int adrv9002_reset(void)
 }
 
 /**
+ * Enable LNA
+ */
+static int adrv9002_lna_enable(uint8_t mask)
+{
+    int ret;
+
+    printf("\n" COLOR_BLUE ">>> Enabling LNA\n" COLOR_RESET);
+    printf("    Mask: 0x%02X\n", mask);
+
+    ret = ioctl(g_fd, ADRV9002_IOC_LNA_ENABLE, &mask);
+    if (ret < 0) {
+        print_error("ADRV9002_IOC_LNA_ENABLE failed");
+        return -1;
+    }
+
+    print_info("LNA enabled successfully");
+    return 0;
+}
+
+/**
+ * Disable LNA
+ */
+static int adrv9002_lna_disable(uint8_t mask)
+{
+    int ret;
+
+    printf("\n" COLOR_BLUE ">>> Disabling LNA\n" COLOR_RESET);
+    printf("    Mask: 0x%02X\n", mask);
+
+    ret = ioctl(g_fd, ADRV9002_IOC_LNA_DISABLE, &mask);
+    if (ret < 0) {
+        print_error("ADRV9002_IOC_LNA_DISABLE failed");
+        return -1;
+    }
+
+    print_info("LNA disabled successfully");
+    return 0;
+}
+
+
+/**
  * Interactive menu
  */
 static void print_menu(void)
@@ -312,8 +358,24 @@ static void print_menu(void)
     printf("7. Enable TX\n");
     printf("8. Disable TX\n");
     printf("9. Reset device\n");
+    printf("10. Enable LNA\n");
+    printf("11. Disable LNA\n");
     printf("0. Exit\n");
     printf("Select option: ");
+}
+
+/**
+ * Print usage information
+ */
+static void print_usage(const char *prog)
+{
+    printf("Usage: %s [OPTIONS]\n", prog);
+    printf("\nOptions:\n");
+    printf("  -p <path>    Path to profile config file (default: ./etc/pfile.json)\n");
+    printf("  -s <path>    Path to stream/ARM binary file (default: ./etc/stream.bin)\n");
+    printf("  -h           Show this help message\n");
+    printf("\nExample:\n");
+    printf("  %s -p /path/to/profile.json -s /path/to/stream.bin\n", prog);
 }
 
 /**
@@ -326,6 +388,33 @@ int main(int argc, char *argv[])
     uint64_t freq;
     uint32_t gain;
     uint8_t channel, port;
+    int opt;
+    
+    /* Show help if no arguments provided */
+    if (argc == 1) {
+        print_usage(argv[0]);
+        printf("\nNote: Running with default paths.\n");
+        printf("Press Enter to continue or Ctrl+C to exit...\n");
+        getchar();
+    }
+    
+    /* Parse command line arguments */
+    while ((opt = getopt(argc, argv, "p:s:h")) != -1) {
+        switch (opt) {
+        case 'p':
+            g_profile_path = optarg;
+            break;
+        case 's':
+            g_stream_path = optarg;
+            break;
+        case 'h':
+            print_usage(argv[0]);
+            return 0;
+        default:
+            print_usage(argv[0]);
+            return 1;
+        }
+    }
     
     printf(COLOR_BLUE);
     printf("╔════════════════════════════════════════╗\n");
@@ -334,6 +423,10 @@ int main(int argc, char *argv[])
     printf("║   Author: FernandezKA                  ║\n");
     printf("╚════════════════════════════════════════╝\n");
     printf(COLOR_RESET);
+    
+    printf("\nConfiguration:\n");
+    printf("  Profile path: %s\n", g_profile_path);
+    printf("  Stream path:  %s\n", g_stream_path);
     
     /* Open device */
     if (adrv9002_open() < 0) {
@@ -352,8 +445,8 @@ int main(int argc, char *argv[])
         
         switch (choice) {
         case 1:
-            /* Initialize - use dummy paths for testing */
-            adrv9002_init("./etc/pfile.json", "./etc/stream.bin");
+            /* Initialize - use paths from command line or defaults */
+            adrv9002_init(g_profile_path, g_stream_path);
             break;
             
         case 2:
@@ -443,6 +536,24 @@ int main(int argc, char *argv[])
             /* Reset */
             adrv9002_reset();
             break;
+
+        case 10: {
+            uint8_t mask;
+            printf("Enter LNA mask (hex, e.g. FF): ");
+            fgets(input, sizeof(input), stdin);
+            mask = strtoul(input, NULL, 16);
+            adrv9002_lna_enable(mask);
+            break;
+        }
+        
+        case 11: {
+            uint8_t mask;
+            printf("Enter LNA mask (hex, e.g. FF): ");
+            fgets(input, sizeof(input), stdin);
+            mask = strtoul(input, NULL, 16);
+            adrv9002_lna_disable(mask);
+            break;
+        }
             
         case 0:
             print_info("Exiting...");

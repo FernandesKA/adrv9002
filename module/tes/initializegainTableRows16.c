@@ -10,7 +10,7 @@
 #include "adi_adrv9001_ssi.h"
 #include "adi_adrv9001_stream.h"
 #include "adi_adrv9001_tx.h"
-
+#include <linux/types.h>
 adi_adrv9001_RxGainTableRow_t initialize_gainTableRows_16[] = { { 
 		.rxFeGain = 251, 
 		.extControl = 0, 

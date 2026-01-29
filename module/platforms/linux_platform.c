@@ -222,8 +222,6 @@ static int32_t linux_hw_close(void *devHalCfg)
  */
 static int32_t linux_hw_reset(void *devHalCfg, uint8_t pinLevel)
 {
-	struct adrv9002_hal_cfg *hal_cfg = devHalCfg;
-
 	if (!devHalCfg)
 		return ADI_COMMON_ERR_NULL_PARAM;
 
@@ -233,7 +231,8 @@ static int32_t linux_hw_reset(void *devHalCfg, uint8_t pinLevel)
 	 * the gpio API's. Hence if we receive 0 from the API, we want to pass
 	 * 1 to the GPIO API since we want our pin to be active!
 	 */
-	gpiod_set_value_cansleep(hal_cfg->reset_gpio, !pinLevel);
+	//struct adrv9002_hal_cfg *hal_cfg = devHalCfg;
+	//gpiod_set_value_cansleep(hal_cfg->reset_gpio, !pinLevel);
 
 	return ADI_COMMON_ERR_OK;
 }

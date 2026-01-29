@@ -10,7 +10,7 @@
 #include "adi_adrv9001_ssi.h"
 #include "adi_adrv9001_stream.h"
 #include "adi_adrv9001_tx.h"
-
+#include <linux/types.h>
 adi_adrv9001_Init_t initialize_init_8 = { 
 		.clocks = { 
 		.deviceClock_kHz = 300000, 

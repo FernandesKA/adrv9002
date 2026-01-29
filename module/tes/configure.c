@@ -27,7 +27,7 @@ int configure(adi_adrv9001_Device_t * adrv9001Device_0)
 {
 	int32_t error_code = 0;
 
-	printk(KERN_NOTICE "Configuring features.");
+	// printf("%s", "Configuring features.");
 	ADI_HANDLE_ERROR(error_code);
 
 	adi_adrv9001_RxrfdcLoidCfg_t loidConfig_1 = { 
@@ -48,7 +48,7 @@ int configure(adi_adrv9001_Device_t * adrv9001Device_0)
 	uint32_t gpIntMask_5 = 0;
 	error_code = adi_adrv9001_gpio_GpIntMask_Get(adrv9001Device_0, &gpIntMask_5);
 
-	printk(KERN_NOTICE "adi_adrv9001_gpio_GpIntMask_Get parameter 'gpIntMask' read back as '%lu' \n", gpIntMask_5);
+	// printf("adi_adrv9001_gpio_GpIntMask_Get parameter 'gpIntMask' read back as '%lu' \n", gpIntMask_5);
 	ADI_HANDLE_ERROR(error_code);
 
 	error_code = adi_adrv9001_gpio_GpIntMask_Set(adrv9001Device_0, 16);

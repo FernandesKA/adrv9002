@@ -4,6 +4,7 @@
 #include "adi_adrv9001_spi.h"
 #include "adi_adrv9001_ssi.h"
 #include "adi_adrv9001_tx.h"
+#include <linux/types.h>
 
 adi_adrv9001_RxGainTableRow_t calibrate_gainTableRows_10[] = { { 
 		.rxFeGain = 0, 

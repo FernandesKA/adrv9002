@@ -857,7 +857,7 @@ static int32_t adi_adrv9001_Radio_Channel_ToCalibrated(adi_adrv9001_Device_t *ad
     ADI_API_RETURN(adrv9001)
 }
 
-static int32_t adi_adrv9001_Radio_Channel_ToPrimed(adi_adrv9001_Device_t *adrv9001,
+int32_t adi_adrv9001_Radio_Channel_ToPrimed(adi_adrv9001_Device_t *adrv9001,
 						   adi_common_Port_e port,
 						   adi_common_ChannelNumber_e channel)
 {

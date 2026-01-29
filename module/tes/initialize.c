@@ -22,7 +22,6 @@
 /* ADRV9001 Plugin: v0.26.0*/
 
 #include "initialize.h"
-#include <linux/kernel.h>
 
 int initialize(adi_adrv9001_Device_t * adrv9001Device_0, adi_adrv9001_Init_t * initialize_init_8, uint8_t * image_stream_binary, uint32_t image_stream_size)
 {
@@ -34,7 +33,7 @@ int initialize(adi_adrv9001_Device_t * adrv9001Device_0, adi_adrv9001_Init_t * i
 		.patch = 0 };
 	error_code = adi_adrv9001_ApiVersion_Get(adrv9001Device_0, &apiVersion_0);
 
-	printk(KERN_NOTICE "adi_adrv9001_ApiVersion_Get parameter 'apiVersion' read back as '{ \n\t\tmajor: %lu, \n\t\tminor: %lu, \n\t\tpatch: %lu\n }' \n", apiVersion_0.major, apiVersion_0.minor, apiVersion_0.patch);
+	// // printf("adi_adrv9001_ApiVersion_Get parameter 'apiVersion' read back as '{ \n\t\tmajor: %lu, \n\t\tminor: %lu, \n\t\tpatch: %lu\n }' \n", apiVersion_0.major, apiVersion_0.minor, apiVersion_0.patch);
 	ADI_HANDLE_ERROR(error_code);
 
 	/* Begin region  Adrv9001BoardEe.Initialize(init, radioCtrlInit, streamImageBytes, armImage, orxGainTable, rxGainTable, txAttenTable, phase, emulatedPartNumber) */
@@ -266,7 +265,7 @@ int initialize(adi_adrv9001_Device_t * adrv9001Device_0, adi_adrv9001_Init_t * i
 	/* End region  Adrv9001BoardEe.Initialize(init, radioCtrlInit, streamImageBytes, armImage, orxGainTable, rxGainTable, txAttenTable, phase, emulatedPartNumber) */
 	ADI_HANDLE_ERROR(error_code);
 
-	printk(KERN_NOTICE "%s", "Initialization successful.");
+	// printf("%s", "Initialization successful.");
 	ADI_HANDLE_ERROR(error_code);
 
 

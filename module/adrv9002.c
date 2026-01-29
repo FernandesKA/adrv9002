@@ -23,45 +23,333 @@
 #include <linux/mutex.h>
 #include <linux/device.h>
 #include <linux/version.h>
+#include <linux/string.h>
+#include <linux/compat.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+#include <linux/ktime.h>
+#include <linux/printk.h>
 
-#include <linux/spi/spi.h>
 #include "adrv9002.h"
+#include "adrv9002_log_buffer.h"
 #include "adrv9002_ioctl.h"
+#include "adrv9002_radio.h"
 
-#include "tes/initialize.h"
+/* Avoid redefinition warning from printk.h */
+#undef pr_fmt
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define DRIVER_NAME "adrv9002"
 #define DRIVER_VERSION "0.1.0"
+/* Limit incoming profile/stream buffers from user space to avoid OOM */
+#define ADRV9002_MAX_PROFILE_SIZE   (1 * 1024 * 1024)
+#define ADRV9002_MAX_STREAM_SIZE    (1 * 1024 * 1024)
 /*private device structure*/
 
-struct adrv9002_priv *g_priv;
+bool adrv9002_verbose_logs;
+module_param_named(verbose_logs, adrv9002_verbose_logs, bool, 0644);
+MODULE_PARM_DESC(verbose_logs, "Enable verbose info logs for tuning/init operations");
+bool adrv9002_detailed_logs = false;
+module_param_named(detailed_logs, adrv9002_detailed_logs, bool, 0644);
+MODULE_PARM_DESC(detailed_logs, "Enable detailed frequency change logging to ring buffer (disabled after first reinit)");
+bool adrv9002_measure_timing;
+module_param_named(measure_timing, adrv9002_measure_timing, bool, 0644);
+MODULE_PARM_DESC(measure_timing, "Enable timing measurements for init and frequency tuning operations");
+
+bool adrv9002_auto_reinit = false;
+module_param_named(auto_reinit, adrv9002_auto_reinit, bool, 0644);
+MODULE_PARM_DESC(auto_reinit, "Automatically reinitialize transceiver on IOCTL errors (workaround for ADI API issues)");
+
+int adrv9002_freq_change_timeout_us = 500;
+module_param_named(freq_change_timeout_us, adrv9002_freq_change_timeout_us, int, 0644);
+MODULE_PARM_DESC(freq_change_timeout_us, "Baseline sleep (us) for state polling during frequency change (default 500)");
+
+int adrv9002_prime_retry_count = 4;
+module_param_named(prime_retry_count, adrv9002_prime_retry_count, int, 0644);
+MODULE_PARM_DESC(prime_retry_count, "Number of retry attempts for prime operation (default 4, max 5)");
+
+static struct proc_dir_entry *adrv9002_proc_entry;
+static bool procfs_initialized = false;
+
+/* Dump guard regions of priv to diagnose memory corruption */
+static void adrv9002_dump_priv_guards(struct adrv9002_priv *priv)
+{
+    const void *start = (const void *)priv;
+    const void *end = (const void *)priv + sizeof(*priv);
+    size_t dump_sz = 64; /* dump 64 bytes from start and end */
+
+    if (!priv)
+        return;
+
+    pr_err("adrv9002: Dumping priv guard regions (size=%zu)\n", sizeof(*priv));
+    /* Start of structure */
+    print_hex_dump(KERN_ERR, "priv[start] ", DUMP_PREFIX_OFFSET, 16, 1,
+                   start, min(dump_sz, sizeof(*priv)), true);
+    /* End of structure */
+    if (sizeof(*priv) > dump_sz) {
+        const void *tail = end - dump_sz;
+        print_hex_dump(KERN_ERR, "priv[end]   ", DUMP_PREFIX_OFFSET, 16, 1,
+                       tail, dump_sz, true);
+    }
+}
+
+/* Validate that critical pointers in priv structure are still valid */
+static bool adrv9002_validate_priv(struct adrv9002_priv *priv)
+{
+    if (!priv || !virt_addr_valid(priv)) {
+        pr_err("adrv9002: priv is NULL or invalid address\n");
+        return false;
+    }
+    
+    if (priv->magic != ADRV9002_PRIV_MAGIC) {
+        pr_err("adrv9002: priv magic is corrupted! Expected 0x%x, got 0x%x - MEMORY CORRUPTION!\n",
+               ADRV9002_PRIV_MAGIC, priv->magic);
+        adrv9002_dump_priv_guards(priv);
+        return false;
+    }
+    
+    if (priv->canary != ADRV9002_PRIV_CANARY) {
+        pr_err("adrv9002: priv canary is corrupted! Expected 0x%x, got 0x%x - BUFFER OVERFLOW!\n",
+               ADRV9002_PRIV_CANARY, priv->canary);
+        pr_err("adrv9002: Structure size: %zu bytes. SDK likely overwrites beyond allocated memory!\n",
+               sizeof(struct adrv9002_priv));
+        adrv9002_dump_priv_guards(priv);
+        return false;
+    }
+    
+    if (!priv->spi || !virt_addr_valid(priv->spi)) {
+        pr_err("adrv9002: priv->spi is NULL or invalid address (priv magic OK: 0x%x)\n", priv->magic);
+        return false;
+    }
+    
+    if (!virt_addr_valid(&priv->spi->dev) || !priv->spi->dev.parent) {
+        pr_err("adrv9002: priv->spi->dev or dev.parent is NULL (corrupted?)\n");
+        return false;
+    }
+    
+    return true;
+}
+
+static int adrv9002_try_auto_reinit(struct adrv9002_priv *priv)
+{
+    struct adrv9002_init_params params;
+    int ret;
+
+    if (!adrv9002_auto_reinit || !priv->saved_profile_buf || !priv->saved_stream_buf) {
+        return -ENODATA;
+    }
+
+    if (!adrv9002_validate_priv(priv)) {
+        pr_err("adrv9002: priv validation failed in auto_reinit\n");
+        return -EINVAL;
+    }
+
+    dev_warn(&priv->spi->dev, "Attempting auto-reinit due to IOCTL error (count: %d)\n",
+             atomic_read(&priv->reinit_count) + 1);
+
+    /* Disable detailed logging after first reinit to reduce overhead */
+    if (atomic_read(&priv->reinit_count) == 0) {
+            adrv9002_log_buffer_disable(&priv->log_buffer);
+        dev_info(&priv->spi->dev, "Detailed logging disabled after first reinit\n");
+    }
+
+    /* Reset device */
+    adrv9002_hw_reset(priv);
+    if (priv->lna)
+        lna_disable(priv->lna, 0xFF);
+    adrv9002_free_device(priv);
+    memset(priv->lo_freq, 0, sizeof(priv->lo_freq));
+    memset(priv->gain, 0, sizeof(priv->gain));
+    /* reset state is implied by NULL adrv9001Device */
+
+    /* Reinit with saved buffers */
+    params.profile_buf = priv->saved_profile_buf;
+    params.profile_buf_len = priv->saved_profile_buf_len;
+    params.stream_buf = priv->saved_stream_buf;
+    params.stream_buf_len = priv->saved_stream_buf_len;
+
+    ret = adrv9002_do_init(priv, &params);
+    if (ret == 0) {
+        atomic_inc(&priv->reinit_count);
+        if (adrv9002_validate_priv(priv)) {
+            dev_info(&priv->spi->dev, "Auto-reinit successful\n");
+        }
+    } else {
+        if (adrv9002_validate_priv(priv)) {
+            dev_err(&priv->spi->dev, "Auto-reinit failed: %d\n", ret);
+        } else {
+            pr_err("adrv9002: Auto-reinit failed: %d\n", ret);
+        }
+    }
+
+    return ret;
+}
+
+static int adrv9002_handle_init_ioctl(struct adrv9002_priv *priv,
+                                      struct adrv9002_init_params *params)
+{
+    int ret;
+
+    /* Always (re)initialize on INIT call: previous state will be freed in do_init */
+
+    if (!params->profile_buf || params->profile_buf_len <= 0 ||
+        params->profile_buf_len > ADRV9002_MAX_PROFILE_SIZE)
+    {
+        if (adrv9002_validate_priv(priv)) {
+            dev_err(&priv->spi->dev, "Profile buffer invalid or too large\n");
+        } else {
+            pr_err("adrv9002: Profile buffer invalid or too large\n");
+        }
+        return -EINVAL;
+    }
+
+    if (!params->stream_buf || params->stream_buf_len <= 0 ||
+        params->stream_buf_len > ADRV9002_MAX_STREAM_SIZE)
+    {
+        if (adrv9002_validate_priv(priv)) {
+            dev_err(&priv->spi->dev, "Stream buffer invalid or too large\n");
+        } else {
+            pr_err("adrv9002: Stream buffer invalid or too large\n");
+        }
+        return -EINVAL;
+    }
+
+    /* Allocate and copy user buffers in one step */
+    char *kernel_profile_buf = memdup_user(params->profile_buf, params->profile_buf_len);
+    if (IS_ERR(kernel_profile_buf))
+    {
+        ret = PTR_ERR(kernel_profile_buf);
+        if (adrv9002_validate_priv(priv)) {
+            dev_err(&priv->spi->dev, "Failed to copy profile buffer: %d\n", ret);
+        } else {
+            pr_err("adrv9002: Failed to copy profile buffer: %d\n", ret);
+        }
+        return ret;
+    }
+
+    char *kernel_stream_buf = memdup_user(params->stream_buf, params->stream_buf_len);
+    if (IS_ERR(kernel_stream_buf))
+    {
+        ret = PTR_ERR(kernel_stream_buf);
+        if (adrv9002_validate_priv(priv)) {
+            dev_err(&priv->spi->dev, "Failed to copy stream buffer: %d\n", ret);
+        } else {
+            pr_err("adrv9002: Failed to copy stream buffer: %d\n", ret);
+        }
+        goto err_free_profile;
+    }
+
+    params->profile_buf = kernel_profile_buf;
+    params->stream_buf = kernel_stream_buf;
+
+    ret = adrv9002_do_init(priv, params);
+
+    /* Save buffers for potential auto-reinit on errors */
+    if (ret == 0 && adrv9002_auto_reinit) {
+        /* Free old saved buffers if any */
+        if (priv->saved_profile_buf) {
+            kfree(priv->saved_profile_buf);
+            priv->saved_profile_buf = NULL;
+        }
+        if (priv->saved_stream_buf) {
+            kfree(priv->saved_stream_buf);
+            priv->saved_stream_buf = NULL;
+        }
+
+        /* Allocate new copies */
+        priv->saved_profile_buf = kmalloc(params->profile_buf_len, GFP_KERNEL);
+        if (priv->saved_profile_buf) {
+            memcpy(priv->saved_profile_buf, kernel_profile_buf, params->profile_buf_len);
+            priv->saved_profile_buf_len = params->profile_buf_len;
+        }
+
+        priv->saved_stream_buf = kmalloc(params->stream_buf_len, GFP_KERNEL);
+        if (priv->saved_stream_buf) {
+            memcpy(priv->saved_stream_buf, kernel_stream_buf, params->stream_buf_len);
+            priv->saved_stream_buf_len = params->stream_buf_len;
+        }
+    }
+
+    kfree(kernel_stream_buf);
+err_free_profile:
+    kfree(kernel_profile_buf);
+    return ret;
+}
+
+static int adrv9002_proc_show(struct seq_file *m, void *v)
+{
+    struct adrv9002_priv *priv = m->private;
+    bool lna_present = false;
+
+    if (priv && priv->lna)
+        lna_present = priv->lna->available;
+
+    seq_printf(m, "driver_version: %s\n", DRIVER_VERSION);
+    seq_printf(m, "initialized: %d\n", priv && priv->adrv9001Device ? 1 : 0);
+    seq_printf(m, "auto_reinit_count: %d\n", priv ? atomic_read(&priv->reinit_count) : 0);
+    seq_printf(m, "lna_present: %d\n", lna_present);
+    seq_printf(m, "lna_gpios: %d\n",
+               lna_present ? priv->lna->num_gpios : 0);
+    seq_printf(m, "lna_state: 0x%02x\n",
+               lna_present ? priv->lna->lna_state : 0);
+    seq_printf(m, "lo_freq[0]: %llu\n", priv ? priv->lo_freq[0] : 0);
+    seq_printf(m, "lo_freq[1]: %llu\n", priv ? priv->lo_freq[1] : 0);
+    seq_printf(m, "gain[0]: %u\n", priv ? priv->gain[0] : 0);
+    seq_printf(m, "gain[1]: %u\n", priv ? priv->gain[1] : 0);
+
+    if (unlikely(adrv9002_measure_timing) && priv) {
+        seq_printf(m, "ioctl_init_time_us: %llu\n", priv->ioctl_time_us[0]);
+        seq_printf(m, "ioctl_set_freq_time_us: %llu\n", priv->ioctl_time_us[1]);
+        seq_printf(m, "ioctl_get_freq_time_us: %llu\n", priv->ioctl_time_us[2]);
+        seq_printf(m, "ioctl_set_gain_time_us: %llu\n", priv->ioctl_time_us[3]);
+        seq_printf(m, "ioctl_rx_enable_time_us: %llu\n", priv->ioctl_time_us[4]);
+        seq_printf(m, "ioctl_tx_enable_time_us: %llu\n", priv->ioctl_time_us[5]);
+        seq_printf(m, "ioctl_reset_time_us: %llu\n", priv->ioctl_time_us[6]);
+        seq_printf(m, "ioctl_lna_enable_time_us: %llu\n", priv->ioctl_time_us[7]);
+        seq_printf(m, "ioctl_lna_disable_time_us: %llu\n", priv->ioctl_time_us[8]);
+        seq_printf(m, "freq_change_timeout_us: %d\n", adrv9002_freq_change_timeout_us);
+        seq_printf(m, "prime_retry_count: %d\n", adrv9002_prime_retry_count);
+    }
+    
+    seq_printf(m, "\n=== Detailed Logs ===\n");
+    seq_printf(m, "detailed_logs enabled: %s\n", adrv9002_detailed_logs ? "yes" : "no");
+    if (priv && priv->log_buffer.buffer) {
+        seq_printf(m, "log_buffer status: %s\n", priv->log_buffer.enabled ? "active" : "disabled");
+        seq_printf(m, "log_buffer usage: %zu / %zu bytes\n",
+                   priv->log_buffer.write_pos, priv->log_buffer.size);
+        seq_printf(m, "See /proc/adrv9002_log for full buffer contents\n");
+    } else {
+        seq_printf(m, "log_buffer: not allocated\n");
+    }
+
+    return 0;
+}
+
+static int adrv9002_proc_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, adrv9002_proc_show, PDE_DATA(inode));
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
+static const struct proc_ops adrv9002_proc_ops = {
+    .proc_open = adrv9002_proc_open,
+    .proc_read = seq_read,
+    .proc_lseek = seq_lseek,
+    .proc_release = single_release,
+};
+#else
+static const struct file_operations adrv9002_proc_ops = {
+    .owner = THIS_MODULE,
+    .open = adrv9002_proc_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+    .release = single_release,
+};
+#endif
 
 /* ============================================================================
  * Hardware control functions
  * ============================================================================ */
-
-static void adrv9002_hw_reset(struct adrv9002_priv *priv)
-{
-
-    dev_dbg(&priv->spi->dev, "DIRTY HACK! Write into regs PL\n");
-    void __iomem *regs = ioremap(0x43c00000, 4);
-    writel(0x00u, regs);
-    writel(0x03u, regs);
-    iounmap(regs);
-
-   dev_dbg(&priv->spi->dev, "DIRTY HACK! Write into regs PL ok. TODO: Need to remove\n");
-
-    if (!priv->reset_gpio)
-        return;
-
-    dev_dbg(&priv->spi->dev, "Resetting hardware\n");
-
-    gpiod_set_value_cansleep(priv->reset_gpio, 1);
-    usleep_range(5000, 6000);
-    gpiod_set_value_cansleep(priv->reset_gpio, 0);
-    usleep_range(5000, 6000);
-}
-
 
 static int spi_dev_init(struct spi_dev *dev, struct spi_device *spi)
 {
@@ -74,277 +362,6 @@ static int spi_dev_init(struct spi_dev *dev, struct spi_device *spi)
     return 0;
 }
 
-static int spi_dev_send(struct spi_dev *dev, const void *buf, size_t len)
-{
-    struct spi_transfer transfer = {
-        .tx_buf = buf,
-        .len = len,
-    };
-
-    struct spi_message msg;
-    int ret;
-
-    spi_message_init(&msg);
-    spi_message_add_tail(&transfer, &msg);
-
-    ret = spi_sync(dev->spi, &msg);
-    if (ret < 0)
-    {
-        dev_err(&dev->spi->dev, "spi_sync failed: %d\n", ret);
-    }
-
-    return ret;
-}
-
-static int spi_dev_recv(struct spi_dev *dev, void *buf, size_t len)
-{
-    struct spi_transfer transfer = {
-        .rx_buf = buf,
-        .len = len,
-    };
-
-    struct spi_message msg;
-    int ret;
-
-    spi_message_init(&msg);
-    spi_message_add_tail(&transfer, &msg);
-
-    ret = spi_sync(dev->spi, &msg);
-    if (ret < 0)
-    {
-        dev_err(&dev->spi->dev, "spi_sync failed: %d\n", ret);
-    }
-
-    return ret;
-}
-
-static int spi_dev_transfer(struct spi_dev *dev, const void *tx_buf, void *rx_buf, size_t len)
-{
-    struct spi_transfer transfer = {
-        .tx_buf = tx_buf,
-        .rx_buf = rx_buf,
-        .len = len,
-    };
-
-    struct spi_message msg;
-    int ret;
-
-    spi_message_init(&msg);
-    spi_message_add_tail(&transfer, &msg);
-
-    ret = spi_sync(dev->spi, &msg);
-    if (ret < 0)
-    {
-        dev_err(&dev->spi->dev, "spi_sync failed: %d\n", ret);
-    }
-
-    return ret;
-}
-
-static int spi_dev_transfer_buf(struct spi_dev *dev, u8 *tx_data, u8 *rx_data, size_t len)
-{
-    return spi_dev_transfer(dev, (const void *)tx_data, (void *)rx_data, len);
-}
-
-
-static int adrv9002_spi_write_cmd(struct adrv9002_priv *priv, const u8 *buf, size_t len) {
-    return spi_dev_send(&priv->spi_dev, buf, len);
-}
-
-static int adrv9002_spi_read_data(struct adrv9002_priv *priv, u8 *buf, size_t len) {
-    return spi_dev_recv(&priv->spi_dev, buf, len);
-}
-
-static int adrv9002_spi_xfer(struct adrv9002_priv *priv, const u8 *tx, u8 *rx, size_t len) {
-    return spi_dev_transfer(&priv->spi_dev, tx, rx, len);
-}
-
-/* ============================================================================
- * ADRV9002 initialization sequence
- * ============================================================================ */
-static int adrv9002_do_init(struct adrv9002_priv *priv,
-                            struct adrv9002_init_params *params)
-{
-
-    err_free_profile:
-    int ret =  0;
-    dev_info(&priv->spi->dev, "Starting initialization...\n");
-
-    if (!priv) {
-        printk(KERN_ERR "priv is NULL\n");
-        return -EINVAL;
-    }
-
-    priv->adrv9001Device = kzalloc(sizeof(adi_adrv9001_Device_t), GFP_KERNEL);
-    if (!priv->adrv9001Device) {
-        printk(KERN_ERR "adrv9001Device is NULL\n");
-        return -EINVAL;
-    }
-    
-    priv->adrv9001Init = kzalloc(sizeof(adi_adrv9001_Init_t), GFP_KERNEL);
-    if (!priv->adrv9001Init) {
-        printk(KERN_ERR "adrv9001Init is NULL\n");
-        return -EINVAL;
-    }
-
-    printk(KERN_ERR "we are here\n");
-
-    // dev_info(&priv->spi->dev, "Make reset\n");
-    // adrv9002_hw_reset(priv);
-
-    /* TODO: Load profile JSON */
-    dev_info(&priv->spi->dev, "Begin profile parsing \n");
-    ret = adi_adrv9001_profileutil_Parse(priv->adrv9001Device, priv->adrv9001Init, params->profile_buf, params->profile_buf_len);
-
-    if (ret) {
-        dev_err(&priv->spi->dev, "Profile parsing failed: %d\n", ret);
-        return ret;
-    }
-
-    if (priv->hal_context) {
-        priv->adrv9001Device->common.devHalInfo = priv->hal_context;
-    } else {
-        dev_err(&priv->spi->dev, "HAL context is NULL\n");
-        return -EINVAL;
-    }
-
-    dev_err(&priv->spi->dev, "DIRTY HACK! Write into regs PL\n");
-    void __iomem *regs = ioremap(0x43c00000, 4);
-    writel(0x03u, regs);
-    iounmap(regs);
-    dev_err(&priv->spi->dev, "DIRTY HACK! Write into regs PL ok. TODO: Need to remove\n");
-
-    ret = initialize(priv->adrv9001Device, priv->adrv9001Init, params->stream_buf, params->stream_buf_len);
-    if (ret) {
-        dev_err(&priv->spi->dev, "Initialization failed: %d\n", ret);
-        return ret;
-    }
-    /* TODO: Load stream binary */
-    /* ret = adrv9002_load_stream(priv, params->stream_path); */
-
-    /* TODO: Vendor API initialization */
-    /* ret = adi_adrv9001_Initialize(...); */
-
-    /* TODO: ARM start check */
-    /* ret = adi_adrv9001_arm_StartStatusCheck(...); */
-
-    /* TODO: Calibration */
-    /* ret = adi_adrv9001_Calibrate(...); */
-
-    /* TODO: Configure */
-    /* ret = adi_adrv9001_Configure(...); */
-
-    /* TODO: Prime */
-    /* ret = adi_adrv9001_Prime(...); */
-
-    if (ret)
-    {
-        dev_err(&priv->spi->dev, "Initialization failed: %d\n", ret);
-        return ret;
-    }
-
-    priv->initialized = true;
-    dev_info(&priv->spi->dev, "Initialization complete\n");
-
-    return 0;
-}
-
-/* ============================================================================
- * Runtime configuration functions
- * ============================================================================ */
-
-static int adrv9002_set_frequency(struct adrv9002_priv *priv,
-                                  struct adrv9002_freq_params *freq)
-{
-    int ret = 0;
-
-    if (freq->channel >= 2)
-    {
-        dev_err(&priv->spi->dev, "Invalid channel: %u\n", freq->channel);
-        return -EINVAL;
-    }
-
-    dev_info(&priv->spi->dev, "Set freq ch%u port%u: %llu Hz\n",
-             freq->channel, freq->port, freq->freq_hz);
-
-    /* TODO: Vendor API call */
-    /* ret = adi_adrv9001_Radio_Carrier_Configure(...); */
-
-    if (ret == 0)
-        priv->lo_freq[freq->channel] = freq->freq_hz;
-
-    return ret;
-}
-
-static int adrv9002_get_frequency(struct adrv9002_priv *priv,
-                                  struct adrv9002_freq_params *freq)
-{
-    if (freq->channel >= 2)
-        return -EINVAL;
-
-    /* Return cached value */
-    freq->freq_hz = priv->lo_freq[freq->channel];
-
-    return 0;
-}
-
-static int adrv9002_set_gain(struct adrv9002_priv *priv,
-                             struct adrv9002_gain_params *gain)
-{
-    int ret = 0;
-
-    if (gain->channel >= 2)
-    {
-        dev_err(&priv->spi->dev, "Invalid channel: %u\n", gain->channel);
-        return -EINVAL;
-    }
-
-    dev_info(&priv->spi->dev, "Set gain ch%u: %u\n",
-             gain->channel, gain->gain);
-
-    /* TODO: Vendor API call */
-    /* ret = adi_adrv9001_Rx_Gain_Set(...); */
-
-    if (ret == 0)
-        priv->gain[gain->channel] = gain->gain;
-
-    return ret;
-}
-
-static int adrv9002_enable_rx(struct adrv9002_priv *priv,
-                              struct adrv9002_channel_ctrl *ctrl)
-{
-    int ret = 0;
-
-    if (ctrl->channel >= 2)
-        return -EINVAL;
-
-    dev_info(&priv->spi->dev, "RX ch%u: %s\n",
-             ctrl->channel, ctrl->enable ? "enable" : "disable");
-
-    /* TODO: Vendor API call */
-    /* ret = adi_adrv9001_Radio_Channel_EnableRf(...); */
-
-    return ret;
-}
-
-static int adrv9002_enable_tx(struct adrv9002_priv *priv,
-                              struct adrv9002_channel_ctrl *ctrl)
-{
-    int ret = 0;
-
-    if (ctrl->channel >= 2)
-        return -EINVAL;
-
-    dev_info(&priv->spi->dev, "TX ch%u: %s\n",
-             ctrl->channel, ctrl->enable ? "enable" : "disable");
-
-    /* TODO: Vendor API call */
-    /* ret = adi_adrv9001_Radio_Channel_EnableRf(...); */
-
-    return ret;
-}
-
 /* ============================================================================
  * Character device operations
  * ============================================================================ */
@@ -354,7 +371,23 @@ static int adrv9002_open(struct inode *inode, struct file *filp)
     struct adrv9002_priv *priv;
 
     priv = container_of(inode->i_cdev, struct adrv9002_priv, cdev);
+    
+    if (!priv || !virt_addr_valid(priv)) {
+        pr_err("adrv9002: open() got invalid priv from container_of\n");
+        return -EFAULT;
+    }
+    if (priv->removed) {
+        pr_err("adrv9002: device was removed, refusing open\n");
+        return -ENODEV;
+    }
+    
+    if (!priv->spi || !virt_addr_valid(priv->spi)) {
+        pr_err("adrv9002: priv->spi is invalid in open()\n");
+        return -EFAULT;
+    }
+    
     filp->private_data = priv;
+    atomic_inc(&priv->open_count);
 
     dev_dbg(&priv->spi->dev, "Device opened\n");
     return 0;
@@ -364,7 +397,36 @@ static int adrv9002_release(struct inode *inode, struct file *filp)
 {
     struct adrv9002_priv *priv = filp->private_data;
 
+    if (!priv || !virt_addr_valid(priv)) {
+        pr_warn("adrv9002: release() called with invalid priv\n");
+        filp->private_data = NULL;
+        return 0;
+    }
+    
+    if (!priv->spi || !virt_addr_valid(priv->spi)) {
+        pr_warn("adrv9002: priv->spi invalid in release()\n");
+        filp->private_data = NULL;
+        goto out_dec;
+    }
+
     dev_dbg(&priv->spi->dev, "Device closed\n");
+    filp->private_data = NULL;
+out_dec:
+    if (atomic_dec_and_test(&priv->open_count)) {
+        /* Last close: if remove already happened, finalize char device cleanup */
+        if (priv->removed) {
+            /* Deinitialize hardware and HAL now that last fd is closed */
+            adrv9002_free_device(priv);
+            adrv9002_log_buffer_free(priv);
+            adrv9002_hal_deinit(priv);
+
+            cdev_del(&priv->cdev);
+            unregister_chrdev_region(priv->devt, 1);
+
+            /* priv was allocated w/o devm; safe to free here */
+            kfree(priv);
+        }
+    }
     return 0;
 }
 
@@ -374,22 +436,44 @@ static long adrv9002_ioctl(struct file *filp, unsigned int cmd,
     struct adrv9002_priv *priv = filp->private_data;
     int ret = 0;
 
+    if (!priv || !virt_addr_valid(priv)) {
+        pr_err("adrv9002: IOCTL called with invalid priv pointer\n");
+        return -EFAULT;
+    }
+
+    /* Disallow operations once device is removed */
+    if (priv->removed) {
+        pr_err("adrv9002: device removed, ioctl rejected\n");
+        return -ENODEV;
+    }
+
     /* Validate ioctl command */
     if (_IOC_TYPE(cmd) != ADRV9002_IOC_MAGIC)
     {
-        dev_err(&priv->spi->dev, "Invalid ioctl magic: 0x%x\n",
-                _IOC_TYPE(cmd));
+        pr_err("adrv9002: Invalid ioctl magic: 0x%x\n", _IOC_TYPE(cmd));
         return -ENOTTY;
     }
 
     if (_IOC_NR(cmd) > ADRV9002_IOC_MAXNR)
     {
-        dev_err(&priv->spi->dev, "Invalid ioctl number: %u\n",
-                _IOC_NR(cmd));
+        pr_err("adrv9002: Invalid ioctl number: %u\n", _IOC_NR(cmd));
         return -ENOTTY;
     }
 
+    ktime_t start_time = 0, end_time;
+    s64 duration_us;
+    unsigned int cmd_nr = _IOC_NR(cmd);
+
+    if (unlikely(adrv9002_measure_timing))
+        start_time = ktime_get();
+
     mutex_lock(&priv->lock);
+    /* Re-check removal under lock to handle races */
+    if (priv->removed) {
+        mutex_unlock(&priv->lock);
+        pr_err("adrv9002: device removed (locked), ioctl rejected\n");
+        return -ENODEV;
+    }
 
     switch (cmd)
     {
@@ -397,79 +481,25 @@ static long adrv9002_ioctl(struct file *filp, unsigned int cmd,
     {
         struct adrv9002_init_params params;
 
-        if (priv->initialized)
-        {
-            dev_warn(&priv->spi->dev, "Already initialized\n");
-            ret = -EBUSY;
-            break;
-        }
-
         if (copy_from_user(&params, (void __user *)arg, sizeof(params)))
         {
             ret = -EFAULT;
             break;
         }
 
-        if (!params.profile_buf || params.profile_buf_len <= 0) {
-            dev_err(&priv->spi->dev, "Profile buffer is null\n");
-            ret = -EINVAL;
-            break;
-        }
-
-        if (!params.stream_buf || params.stream_buf_len <= 0) {
-            dev_err(&priv->spi->dev, "Stream buffer is null\n");
-            ret = -EINVAL;
-            break;
-        }
-
-        char *kernel_profile_buf = kmalloc(params.profile_buf_len, GFP_KERNEL);
-        if (!kernel_profile_buf) {
-            dev_err(&priv->spi->dev, "Failed to allocate profile buffer\n");
-            ret = -ENOMEM;
-            break;
-        }
-
-        char *kernel_stream_buf = kmalloc(params.stream_buf_len, GFP_KERNEL);
-        if (!kernel_stream_buf) {
-            dev_err(&priv->spi->dev, "Failed to allocate stream buffer\n");
-            goto err_free_profile;
-            ret = -ENOMEM;
-            break;
-        }
-
-        if (copy_from_user(kernel_profile_buf, params.profile_buf, params.profile_buf_len)) {
-            dev_err(&priv->spi->dev, "Failed to copy profile buffer\n");
-            goto err_free_all;
-            ret = -EFAULT;
-            break;
-        }
-
-        if (copy_from_user(kernel_stream_buf, params.stream_buf, params.stream_buf_len)) {
-            dev_err(&priv->spi->dev, "Failed to copy stream buffer\n");
-            goto err_free_all;
-            ret = -EFAULT;
-            break;
-        }
-
-        params.profile_buf = kernel_profile_buf;
-        params.stream_buf = kernel_stream_buf;
-
-        ret = adrv9002_do_init(priv, &params);
-
-        err_free_all:
-        kfree(kernel_stream_buf);
-        err_free_profile:
-        kfree(kernel_profile_buf);
+        ret = adrv9002_handle_init_ioctl(priv, &params);
         break;
     }
-
     case ADRV9002_IOC_SET_FREQ:
     {
         struct adrv9002_freq_params freq;
 
-        if (!priv->initialized)
+        if (!priv->adrv9001Device)
         {
-            dev_err(&priv->spi->dev, "Not initialized\n");
+            if (adrv9002_validate_priv(priv))
+                dev_err(&priv->spi->dev, "Not initialized\n");
+            else
+                pr_err("adrv9002: Not initialized\n");
             ret = -ENODEV;
             break;
         }
@@ -481,12 +511,41 @@ static long adrv9002_ioctl(struct file *filp, unsigned int cmd,
         }
 
         ret = adrv9002_set_frequency(priv, &freq);
+        if (ret != 0 && ret != -EAGAIN && ret != -EINVAL) {
+            if (adrv9002_validate_priv(priv)) {
+                dev_warn(&priv->spi->dev, "SET_FREQ failed with ret=%d, attempting auto-reinit\n", ret);
+            }
+            /* Try auto-reinit on unexpected errors */
+            if (adrv9002_try_auto_reinit(priv) == 0) {
+                if (adrv9002_validate_priv(priv)) {
+                    dev_info(&priv->spi->dev, "Auto-reinit succeeded, retrying SET_FREQ\n");
+                }
+                /* Retry operation after successful reinit */
+                ret = adrv9002_set_frequency(priv, &freq);
+            } else {
+                if (adrv9002_validate_priv(priv)) {
+                    dev_err(&priv->spi->dev, "Auto-reinit failed\n");
+                }
+            }
+        }
+        
+        if (ret != 0) {
+            if (adrv9002_validate_priv(priv)) {
+                dev_err(&priv->spi->dev, "IOCTL: SET_FREQ failed with ret=%d\n", ret);
+            }
+        }
         break;
     }
 
     case ADRV9002_IOC_GET_FREQ:
     {
         struct adrv9002_freq_params freq;
+
+        if (!priv->adrv9001Device)
+        {
+            ret = -ENODEV;
+            break;
+        }
 
         if (copy_from_user(&freq, (void __user *)arg, sizeof(freq)))
         {
@@ -495,6 +554,13 @@ static long adrv9002_ioctl(struct file *filp, unsigned int cmd,
         }
 
         ret = adrv9002_get_frequency(priv, &freq);
+        if (ret != 0 && ret != -EINVAL) {
+            /* Try auto-reinit on unexpected errors */
+            if (adrv9002_try_auto_reinit(priv) == 0) {
+                /* Retry operation after successful reinit */
+                ret = adrv9002_get_frequency(priv, &freq);
+            }
+        }
 
         if (ret == 0 && copy_to_user((void __user *)arg, &freq, sizeof(freq)))
             ret = -EFAULT;
@@ -505,7 +571,7 @@ static long adrv9002_ioctl(struct file *filp, unsigned int cmd,
     {
         struct adrv9002_gain_params gain;
 
-        if (!priv->initialized)
+        if (!priv->adrv9001Device)
         {
             ret = -ENODEV;
             break;
@@ -518,6 +584,13 @@ static long adrv9002_ioctl(struct file *filp, unsigned int cmd,
         }
 
         ret = adrv9002_set_gain(priv, &gain);
+        if (ret != 0 && ret != -EINVAL) {
+            /* Try auto-reinit on unexpected errors */
+            if (adrv9002_try_auto_reinit(priv) == 0) {
+                /* Retry operation after successful reinit */
+                ret = adrv9002_set_gain(priv, &gain);
+            }
+        }
         break;
     }
 
@@ -525,19 +598,31 @@ static long adrv9002_ioctl(struct file *filp, unsigned int cmd,
     {
         struct adrv9002_channel_ctrl ctrl;
 
-        if (!priv->initialized)
+        if (!priv->adrv9001Device)
         {
+            if (adrv9002_validate_priv(priv))
+                dev_err(&priv->spi->dev, "Device not initialized\n");
+            else
+                pr_err("adrv9002: Device not initialized\n");
             ret = -ENODEV;
             break;
         }
 
         if (copy_from_user(&ctrl, (void __user *)arg, sizeof(ctrl)))
         {
+            printk(KERN_ERR "Failed to copy channel control\n");
             ret = -EFAULT;
             break;
         }
 
         ret = adrv9002_enable_rx(priv, &ctrl);
+        if (ret != 0 && ret != -EINVAL) {
+            /* Try auto-reinit on unexpected errors */
+            if (adrv9002_try_auto_reinit(priv) == 0) {
+                /* Retry operation after successful reinit */
+                ret = adrv9002_enable_rx(priv, &ctrl);
+            }
+        }
         break;
     }
 
@@ -545,8 +630,12 @@ static long adrv9002_ioctl(struct file *filp, unsigned int cmd,
     {
         struct adrv9002_channel_ctrl ctrl;
 
-        if (!priv->initialized)
+        if (!priv->adrv9001Device)
         {
+            if (adrv9002_validate_priv(priv))
+                dev_err(&priv->spi->dev, "Device not initialized\n");
+            else
+                pr_err("adrv9002: Device not initialized\n");
             ret = -ENODEV;
             break;
         }
@@ -558,65 +647,255 @@ static long adrv9002_ioctl(struct file *filp, unsigned int cmd,
         }
 
         ret = adrv9002_enable_tx(priv, &ctrl);
+        if (ret != 0 && ret != -EINVAL) {
+            /* Try auto-reinit on unexpected errors */
+            if (adrv9002_try_auto_reinit(priv) == 0) {
+                /* Retry operation after successful reinit */
+                ret = adrv9002_enable_tx(priv, &ctrl);
+            }
+        }
         break;
     }
 
     case ADRV9002_IOC_RESET:
         adrv9002_hw_reset(priv);
-        priv->initialized = false;
-        dev_info(&priv->spi->dev, "Device reset\n");
+        if (priv->lna)
+            lna_disable(priv->lna, 0xFF);
+        adrv9002_free_device(priv);
+        memset(priv->lo_freq, 0, sizeof(priv->lo_freq));
+        memset(priv->gain, 0, sizeof(priv->gain));
+        if (adrv9002_validate_priv(priv))
+            dev_info(&priv->spi->dev, "Device reset\n");
+        else
+            pr_info("adrv9002: Device reset\n");
         break;
 
+        case ADRV9002_IOC_LNA_ENABLE:
+        {
+            __u8 mask;
+
+            if (!priv->adrv9001Device) {
+                ret = -ENODEV;
+                break;
+            }
+
+            if (copy_from_user(&mask, (void __user *)arg, sizeof(mask))) {
+                ret = -EFAULT;
+                break;
+            }
+
+            ret = lna_enable(priv->lna, mask);
+            break;
+        }
+
+        case ADRV9002_IOC_LNA_DISABLE:
+        {
+            __u8 mask;
+
+            if (!priv->adrv9001Device) {
+                ret = -ENODEV;
+                break;
+            }
+
+            if (copy_from_user(&mask, (void __user *)arg, sizeof(mask))) {
+                ret = -EFAULT;
+                break;
+            }
+
+            ret = lna_disable(priv->lna, mask);
+            break;
+        }
+
+
     default:
-        dev_err(&priv->spi->dev, "Unknown ioctl: 0x%x\n", cmd);
+        if (adrv9002_validate_priv(priv))
+            dev_err(&priv->spi->dev, "Unknown ioctl: 0x%x\n", cmd);
+        else
+            pr_err("adrv9002: Unknown ioctl: 0x%x\n", cmd);
         ret = -ENOTTY;
     }
 
     mutex_unlock(&priv->lock);
+
+    if (unlikely(adrv9002_measure_timing) && cmd_nr >= 1 && cmd_nr <= 9) {
+        end_time = ktime_get();
+        duration_us = ktime_to_us(ktime_sub(end_time, start_time));
+        priv->ioctl_time_us[cmd_nr - 1] = (u64)duration_us;
+    }
+
     return ret;
 }
+
+#ifdef CONFIG_COMPAT
+struct adrv9002_init_params_compat {
+    compat_uptr_t profile_buf;
+    u32 profile_buf_len;
+    compat_uptr_t stream_buf;
+    u32 stream_buf_len;
+};
+
+static long adrv9002_compat_ioctl(struct file *filp, unsigned int cmd,
+                                  unsigned long arg)
+{
+    struct adrv9002_priv *priv = filp->private_data;
+    int ret = 0;
+
+    if (_IOC_TYPE(cmd) != ADRV9002_IOC_MAGIC || _IOC_NR(cmd) > ADRV9002_IOC_MAXNR)
+        return -ENOTTY;
+
+    switch (cmd)
+    {
+    case ADRV9002_IOC_INIT:
+    {
+        struct adrv9002_init_params_compat params32;
+        struct adrv9002_init_params params;
+
+        if (copy_from_user(&params32, compat_ptr(arg), sizeof(params32)))
+            return -EFAULT;
+
+        params.profile_buf = compat_ptr(params32.profile_buf);
+        params.profile_buf_len = params32.profile_buf_len;
+        params.stream_buf = compat_ptr(params32.stream_buf);
+        params.stream_buf_len = params32.stream_buf_len;
+
+        mutex_lock(&priv->lock);
+        ret = adrv9002_handle_init_ioctl(priv, &params);
+        mutex_unlock(&priv->lock);
+        return ret;
+    }
+
+    default:
+        /* Other ioctl structs are layout-compatible; delegate to native path */
+        return adrv9002_ioctl(filp, cmd, arg);
+    }
+}
+#endif
 
 static const struct file_operations adrv9002_fops = {
     .owner = THIS_MODULE,
     .open = adrv9002_open,
     .release = adrv9002_release,
     .unlocked_ioctl = adrv9002_ioctl,
+#ifdef CONFIG_COMPAT
+    .compat_ioctl = adrv9002_compat_ioctl,
+#endif
 };
 
 /* ============================================================================
  * SPI driver probe/remove
  * ============================================================================ */
+/*
+ * Parse reset configuration from Device Tree
+ * Supports both GPIO-based and register-based reset
+ */
+static int adrv9002_parse_reset_config(struct device *dev,
+                                       struct adrv9002_reset_config *cfg)
+{
+    struct device_node *np = dev->of_node;
+    struct gpio_desc *gpio;
+
+    if (!np)
+        return -EINVAL;
+
+    gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
+    
+    if (IS_ERR(gpio)) {
+        dev_err(dev, "Failed to get reset GPIO: %ld\n", PTR_ERR(gpio));
+        return PTR_ERR(gpio);
+    }
+
+    if (gpio) {
+        dev_info(dev, "Got reset GPIO successfully\n");
+        cfg->type = RESET_TYPE_GPIO;
+        cfg->u.gpio = gpio;
+        return 0;
+    }
+
+    if (of_property_read_bool(np, "reset-gpios")) {
+        dev_warn(dev, "reset-gpios in DTS but GPIO not accessible, deferring\n");
+        return -EPROBE_DEFER;
+    }
+
+    dev_info(dev, "No reset GPIO configured in DTS\n");
+    cfg->type = RESET_TYPE_NONE;
+    return 0;
+}
+
 
 static int adrv9002_probe(struct spi_device *spi)
 {
     struct adrv9002_priv *priv;
     int ret;
+    bool hal_inited = false;
 
     dev_info(&spi->dev, "Probing ADRV9002 driver v%s\n", DRIVER_VERSION);
 
-    /* Allocate private data */
-    priv = devm_kzalloc(&spi->dev, sizeof(*priv), GFP_KERNEL);
+    /* Allocate private data with explicit lifetime control (not devm) */
+    priv = kzalloc(sizeof(*priv), GFP_KERNEL);
     if (!priv)
         return -ENOMEM;
 
+    priv->magic = ADRV9002_PRIV_MAGIC;
     priv->spi = spi;
-    g_priv = priv;
-    mutex_init(&priv->lock);
+    atomic_set(&priv->open_count, 0);
+    priv->removed = false;
 
-    /* Get GPIO from Device Tree */
-    priv->reset_gpio = devm_gpiod_get_optional(&spi->dev, "reset-gpio",
-                                               GPIOD_OUT_LOW);
-    if (IS_ERR(priv->reset_gpio))
-    {
-        ret = PTR_ERR(priv->reset_gpio);
-        dev_err(&spi->dev, "Failed to get reset GPIO: %d\n", ret);
+    priv->reset_config = devm_kzalloc(&spi->dev, sizeof(*priv->reset_config), GFP_KERNEL);
+    if (!priv->reset_config) {
+        ret = -ENOMEM;
+        goto err_free_priv;
+    }
+
+    mutex_init(&priv->lock);
+    
+    priv->canary = ADRV9002_PRIV_CANARY;
+    
+    /* Initialize detailed log buffer */
+    adrv9002_log_buffer_init(priv);
+
+    /* Initialize log buffer procfs interface on first probe */
+    if (!procfs_initialized) {
+        ret = adrv9002_log_buffer_procfs_init();
+        if (ret)
+            dev_warn(&spi->dev, "Failed to initialize log buffer procfs: %d\n", ret);
+        else
+            procfs_initialized = true;
+    }
+    
+    /* Set this driver instance for procfs access */
+    adrv9002_log_buffer_set_priv(priv);
+
+    ret = adrv9002_parse_reset_config(&spi->dev, priv->reset_config);
+    if (ret) {
+        if (ret != -EPROBE_DEFER) {
+            dev_err(&spi->dev, "Failed to parse reset configuration: %d\n", ret);
+        }
         return ret;
     }
 
-    ret = adrv9002_hal_init(priv, priv->spi, priv->reset_gpio);
-    if (ret) {
+    ret = adrv9002_hal_init(priv, priv->spi, priv->reset_config);
+    if (ret)
+    {
         dev_err(&spi->dev, "HAL init failed\n");
         return ret;
+    }
+    hal_inited = true;
+
+    priv->lna = devm_kzalloc(&spi->dev, sizeof(*priv->lna), GFP_KERNEL);
+    if (!priv->lna) {
+        dev_err(&spi->dev, "Failed to allocate LNA struct\n");
+        ret = -ENOMEM;
+        goto err_hal_init;
+    }
+
+    ret = parse_lna_config(&spi->dev, priv->lna);
+    if (ret) {
+        dev_warn(&spi->dev, "LNA config not found or invalid (%d). Continuing without LNA.\n", ret);
+    }
+
+    ret = lna_init(priv->lna);
+    if (ret) {
+        dev_warn(&spi->dev, "LNA init failed (%d). Continuing without LNA control.\n", ret);
     }
 
     /* Allocate character device region */
@@ -624,7 +903,7 @@ static int adrv9002_probe(struct spi_device *spi)
     if (ret < 0)
     {
         dev_err(&spi->dev, "Failed to allocate chrdev region: %d\n", ret);
-        return ret;
+        goto err_hal_init;
     }
 
     /* Initialize character device */
@@ -637,6 +916,9 @@ static int adrv9002_probe(struct spi_device *spi)
         dev_err(&spi->dev, "Failed to add cdev: %d\n", ret);
         goto err_chrdev_region;
     }
+    
+    /* Initialize device pointer to NULL to avoid kobject issues */
+    priv->device = NULL;
 
     /* Create device class */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0)
@@ -668,8 +950,19 @@ static int adrv9002_probe(struct spi_device *spi)
     if (ret < 0)
     {
         dev_err(&spi->dev, "Failed to initialize SPI device: %d\n", ret);
-        goto err_class;
+        goto err_device;
     }
+
+    /* Remove old proc entry if it exists (from previous probe) */
+    if (adrv9002_proc_entry) {
+        proc_remove(adrv9002_proc_entry);
+        adrv9002_proc_entry = NULL;
+    }
+
+    adrv9002_proc_entry = proc_create_data("adrv9002", 0444, NULL,
+                                           &adrv9002_proc_ops, priv);
+    if (!adrv9002_proc_entry)
+        dev_warn(&spi->dev, "Failed to create /proc/driver/adrv9002\n");
 
     dev_info(&spi->dev, "SPI device initialized successfully");
     dev_info(&spi->dev, "ADRV9002 driver probed successfully\n");
@@ -677,12 +970,19 @@ static int adrv9002_probe(struct spi_device *spi)
     dev_info(&spi->dev, "Use ioctl(ADRV9002_IOC_INIT) to initialize\n");
     return 0;
 
+err_device:
+    device_destroy(priv->class, priv->devt);
 err_class:
     class_destroy(priv->class);
 err_cdev:
     cdev_del(&priv->cdev);
 err_chrdev_region:
     unregister_chrdev_region(priv->devt, 1);
+err_hal_init:
+    if (hal_inited)
+        adrv9002_hal_deinit(priv);
+err_free_priv:
+    kfree(priv);
     return ret;
 }
 
@@ -694,25 +994,68 @@ static void adrv9002_remove(struct spi_device *spi)
 {
     struct adrv9002_priv *priv = spi_get_drvdata(spi);
 
+    /* Prevent new ioctls and opens; synchronize with ongoing ones */
+    mutex_lock(&priv->lock);
+    priv->removed = true;
+
     dev_info(&spi->dev, "Removing ADRV9002 driver\n");
 
-
-    /* TODO: Cleanup vendor API structures */
+    /* Gracefully quiesce radio if initialized */
     if (priv->adrv9001Device) {
-        kfree(priv->adrv9001Device);
+        dev_info(&spi->dev, "Quiescing radio (stop RX/TX) before removal\n");
+        stop_receiving(priv->adrv9001Device);
+        stop_transmitting(priv->adrv9001Device);
     }
 
-    if (priv->adrv9001Init) {
-        kfree(priv->adrv9001Init);
+    if (priv->lna)
+        lna_deinit(priv->lna);
+
+    /* Free saved init buffers */
+    if (priv->saved_profile_buf)
+        kfree(priv->saved_profile_buf);
+    if (priv->saved_stream_buf)
+        kfree(priv->saved_stream_buf);
+
+    /* Remove proc entries first */
+    if (adrv9002_proc_entry) {
+        proc_remove(adrv9002_proc_entry);
+        adrv9002_proc_entry = NULL;
     }
 
-    device_destroy(priv->class, priv->devt);
-    class_destroy(priv->class);
-    cdev_del(&priv->cdev);
-    unregister_chrdev_region(priv->devt, 1);
+    /* Clean up log buffer procfs */
+    adrv9002_log_buffer_procfs_exit();
+    adrv9002_log_buffer_set_priv(NULL);
+    procfs_initialized = false;
 
-    g_priv = NULL;
+    /* Free device resources only if no open files remain */
+    if (atomic_read(&priv->open_count) == 0) {
+        adrv9002_free_device(priv);
+        adrv9002_log_buffer_free(priv);
+    }
 
+    /* Remove device and class now to prevent new opens */
+    if (priv->device)
+        device_destroy(priv->class, priv->devt);
+    if (priv->class)
+        class_destroy(priv->class);
+    priv->device = NULL;
+    priv->class = NULL;
+
+    if (atomic_read(&priv->open_count) == 0)
+        adrv9002_hal_deinit(priv);
+
+    /* If no open files, finalize char device and free priv */
+    if (atomic_read(&priv->open_count) == 0) {
+        cdev_del(&priv->cdev);
+        unregister_chrdev_region(priv->devt, 1);
+        priv->magic = 0;
+        kfree(priv);
+    } else {
+        /* Defer cdev/unregister + kfree to last release() */
+        priv->magic = ADRV9002_PRIV_MAGIC;
+    }
+
+    mutex_unlock(&priv->lock);
     dev_info(&spi->dev, "ADRV9002 driver removed\n");
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0)
     return 0;
@@ -725,11 +1068,19 @@ static const struct of_device_id adrv9002_of_match[] = {
     {}};
 MODULE_DEVICE_TABLE(of, adrv9002_of_match);
 
+/* SPI device ID table to support autoload via spi:adrv9002 modalias */
+static const struct spi_device_id adrv9002_id[] = {
+    {"adrv9002", 0},
+    {}
+};
+MODULE_DEVICE_TABLE(spi, adrv9002_id);
+
 static struct spi_driver adrv9002_driver = {
     .driver = {
         .name = DRIVER_NAME,
         .of_match_table = adrv9002_of_match,
     },
+    .id_table = adrv9002_id,
     .probe = adrv9002_probe,
     .remove = adrv9002_remove,
 };

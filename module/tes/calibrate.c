@@ -27,7 +27,7 @@ int calibrate(adi_adrv9001_Device_t * adrv9001Device_0)
 {
 	int32_t error_code = 0;
 
-	printk(KERN_NOTICE "Preparing to calibrate. Turn your signal source OFF, then press Enter.");
+	// printf("%s", "Preparing to calibrate. Turn your signal source OFF, then press Enter.");
 	ADI_HANDLE_ERROR(error_code);
 
 	adi_adrv9001_InitCals_t initCals_1 = { 
@@ -42,107 +42,107 @@ int calibrate(adi_adrv9001_Device_t * adrv9001Device_0)
 	uint8_t readData_2 = 0;
 	error_code = adi_adrv9001_spi_Byte_Read(adrv9001Device_0, 11, &readData_2);
 
-	printk(KERN_NOTICE "adi_adrv9001_spi_Byte_Read parameter 'readData' read back as '%lu' \n", readData_2);
+	// printf("adi_adrv9001_spi_Byte_Read parameter 'readData' read back as '%lu' \n", readData_2);
 	ADI_HANDLE_ERROR(error_code);
 
 	uint32_t internalPathDelays_ns_3[6] = { 0 };
 	error_code = adi_adrv9001_cals_InternalPathDelay_Get(adrv9001Device_0, ADI_RX, ADI_CHANNEL_1, internalPathDelays_ns_3, 6);
 
-	printk(KERN_NOTICE "adi_adrv9001_cals_InternalPathDelay_Get parameter 'internalPathDelays_ns' read back as '");
-	printk(KERN_NOTICE "{ %lu", internalPathDelays_ns_3[0]);
+	// printf("adi_adrv9001_cals_InternalPathDelay_Get parameter 'internalPathDelays_ns' read back as '");
+	// printf("{ %lu", internalPathDelays_ns_3[0]);
 	int32_t internalPathDelays_ns_3_indexer = 1;
 	for (internalPathDelays_ns_3_indexer = 1; internalPathDelays_ns_3_indexer < 6; internalPathDelays_ns_3_indexer++)
 	{
-		printk(KERN_NOTICE ", %lu", internalPathDelays_ns_3[internalPathDelays_ns_3_indexer]);
+		// printf(", %lu", internalPathDelays_ns_3[internalPathDelays_ns_3_indexer]);
 	}
-	printk(KERN_NOTICE " }\n");
+	// printf(" }\n");
 	ADI_HANDLE_ERROR(error_code);
 
 	uint32_t internalPathDelays_ns_4[6] = { 0 };
 	error_code = adi_adrv9001_cals_InternalPathDelay_Get(adrv9001Device_0, ADI_TX, ADI_CHANNEL_1, internalPathDelays_ns_4, 6);
 
-	printk(KERN_NOTICE "adi_adrv9001_cals_InternalPathDelay_Get parameter 'internalPathDelays_ns' read back as '");
-	printk(KERN_NOTICE "{ %lu", internalPathDelays_ns_4[0]);
+	// printf("adi_adrv9001_cals_InternalPathDelay_Get parameter 'internalPathDelays_ns' read back as '");
+	// printf("{ %lu", internalPathDelays_ns_4[0]);
 	int32_t internalPathDelays_ns_4_indexer = 1;
 	for (internalPathDelays_ns_4_indexer = 1; internalPathDelays_ns_4_indexer < 6; internalPathDelays_ns_4_indexer++)
 	{
-		printk(KERN_NOTICE ", %lu", internalPathDelays_ns_4[internalPathDelays_ns_4_indexer]);
+		// printf(", %lu", internalPathDelays_ns_4[internalPathDelays_ns_4_indexer]);
 	}
-	printk(KERN_NOTICE " }\n");
+	// printf(" }\n");
 	ADI_HANDLE_ERROR(error_code);
 
 	uint32_t internalPathDelays_ns_5[6] = { 0 };
 	error_code = adi_adrv9001_cals_InternalPathDelay_Get(adrv9001Device_0, ADI_RX, ADI_CHANNEL_2, internalPathDelays_ns_5, 6);
 
-	printk(KERN_NOTICE "adi_adrv9001_cals_InternalPathDelay_Get parameter 'internalPathDelays_ns' read back as '");
-	printk(KERN_NOTICE "{ %lu", internalPathDelays_ns_5[0]);
+	// printf("adi_adrv9001_cals_InternalPathDelay_Get parameter 'internalPathDelays_ns' read back as '");
+	// printf("{ %lu", internalPathDelays_ns_5[0]);
 	int32_t internalPathDelays_ns_5_indexer = 1;
 	for (internalPathDelays_ns_5_indexer = 1; internalPathDelays_ns_5_indexer < 6; internalPathDelays_ns_5_indexer++)
 	{
-		printk(KERN_NOTICE ", %lu", internalPathDelays_ns_5[internalPathDelays_ns_5_indexer]);
+		// printf(", %lu", internalPathDelays_ns_5[internalPathDelays_ns_5_indexer]);
 	}
-	printk(KERN_NOTICE " }\n");
+	// printf(" }\n");
 	ADI_HANDLE_ERROR(error_code);
 
 	uint32_t internalPathDelays_ns_6[6] = { 0 };
 	error_code = adi_adrv9001_cals_InternalPathDelay_Get(adrv9001Device_0, ADI_TX, ADI_CHANNEL_2, internalPathDelays_ns_6, 6);
 
-	printk(KERN_NOTICE "adi_adrv9001_cals_InternalPathDelay_Get parameter 'internalPathDelays_ns' read back as '");
-	printk(KERN_NOTICE "{ %lu", internalPathDelays_ns_6[0]);
+	// printf("adi_adrv9001_cals_InternalPathDelay_Get parameter 'internalPathDelays_ns' read back as '");
+	// printf("{ %lu", internalPathDelays_ns_6[0]);
 	int32_t internalPathDelays_ns_6_indexer = 1;
 	for (internalPathDelays_ns_6_indexer = 1; internalPathDelays_ns_6_indexer < 6; internalPathDelays_ns_6_indexer++)
 	{
-		printk(KERN_NOTICE ", %lu", internalPathDelays_ns_6[internalPathDelays_ns_6_indexer]);
+		// printf(", %lu", internalPathDelays_ns_6[internalPathDelays_ns_6_indexer]);
 	}
-	printk(KERN_NOTICE " }\n");
+	// printf(" }\n");
 	ADI_HANDLE_ERROR(error_code);
 
 	uint8_t minGainIndex_7 = 187;
 	uint8_t maxGainIndex_7 = 255;
 	error_code = adi_adrv9001_Rx_GainControl_MinMaxGainIndex_Get(adrv9001Device_0, ADI_CHANNEL_1, &minGainIndex_7, &maxGainIndex_7);
 
-	printk(KERN_NOTICE "adi_adrv9001_Rx_GainControl_MinMaxGainIndex_Get parameter 'minGainIndex' read back as '%lu' \n", minGainIndex_7);
+	// printf("adi_adrv9001_Rx_GainControl_MinMaxGainIndex_Get parameter 'minGainIndex' read back as '%lu' \n", minGainIndex_7);
 
-	printk(KERN_NOTICE "adi_adrv9001_Rx_GainControl_MinMaxGainIndex_Get parameter 'maxGainIndex' read back as '%lu' \n", maxGainIndex_7);
+	// printf("adi_adrv9001_Rx_GainControl_MinMaxGainIndex_Get parameter 'maxGainIndex' read back as '%lu' \n", maxGainIndex_7);
 	ADI_HANDLE_ERROR(error_code);
 
 	uint16_t numGainIndicesRead_8 = 0;
 	error_code = adi_adrv9001_Rx_GainTable_Read(adrv9001Device_0, ADI_CHANNEL_1, 255, calibrate_gainTableRows_8, 69, &numGainIndicesRead_8);
 
-	printk(KERN_NOTICE "adi_adrv9001_Rx_GainTable_Read parameter 'gainTableRows' read back as '");
-	printk(KERN_NOTICE "{ { \n\t\trxFeGain: %lu, \n\t\textControl: %lu, \n\t\tadcTiaGain: %lu, \n\t\tdigGain: %ld, \n\t\tphaseOffset: %lu\n }", calibrate_gainTableRows_8[0]);
+	// printf("adi_adrv9001_Rx_GainTable_Read parameter 'gainTableRows' read back as '");
+	// printf("{ { \n\t\trxFeGain: %lu, \n\t\textControl: %lu, \n\t\tadcTiaGain: %lu, \n\t\tdigGain: %ld, \n\t\tphaseOffset: %lu\n }", calibrate_gainTableRows_8[0]);
 	int32_t calibrate_gainTableRows_8_indexer = 1;
 	for (calibrate_gainTableRows_8_indexer = 1; calibrate_gainTableRows_8_indexer < 69; calibrate_gainTableRows_8_indexer++)
 	{
-		printk(KERN_NOTICE ", { \n\t\trxFeGain: %lu, \n\t\textControl: %lu, \n\t\tadcTiaGain: %lu, \n\t\tdigGain: %ld, \n\t\tphaseOffset: %lu\n }", calibrate_gainTableRows_8[calibrate_gainTableRows_8_indexer]);
+		// printf(", { \n\t\trxFeGain: %lu, \n\t\textControl: %lu, \n\t\tadcTiaGain: %lu, \n\t\tdigGain: %ld, \n\t\tphaseOffset: %lu\n }", calibrate_gainTableRows_8[calibrate_gainTableRows_8_indexer]);
 	}
-	printk(KERN_NOTICE " }\n");
+	// printf(" }\n");
 
-	printk(KERN_NOTICE "adi_adrv9001_Rx_GainTable_Read parameter 'numGainIndicesRead' read back as '%lu' \n", numGainIndicesRead_8);
+	// printf("adi_adrv9001_Rx_GainTable_Read parameter 'numGainIndicesRead' read back as '%lu' \n", numGainIndicesRead_8);
 	ADI_HANDLE_ERROR(error_code);
 
 	uint8_t minGainIndex_9 = 187;
 	uint8_t maxGainIndex_9 = 255;
 	error_code = adi_adrv9001_Rx_GainControl_MinMaxGainIndex_Get(adrv9001Device_0, ADI_CHANNEL_2, &minGainIndex_9, &maxGainIndex_9);
 
-	printk(KERN_NOTICE "adi_adrv9001_Rx_GainControl_MinMaxGainIndex_Get parameter 'minGainIndex' read back as '%lu' \n", minGainIndex_9);
+	// printf("adi_adrv9001_Rx_GainControl_MinMaxGainIndex_Get parameter 'minGainIndex' read back as '%lu' \n", minGainIndex_9);
 
-	printk(KERN_NOTICE "adi_adrv9001_Rx_GainControl_MinMaxGainIndex_Get parameter 'maxGainIndex' read back as '%lu' \n", maxGainIndex_9);
+	// printf("adi_adrv9001_Rx_GainControl_MinMaxGainIndex_Get parameter 'maxGainIndex' read back as '%lu' \n", maxGainIndex_9);
 	ADI_HANDLE_ERROR(error_code);
 
 	uint16_t numGainIndicesRead_10 = 0;
 	error_code = adi_adrv9001_Rx_GainTable_Read(adrv9001Device_0, ADI_CHANNEL_2, 255, calibrate_gainTableRows_10, 69, &numGainIndicesRead_10);
 
-	printk(KERN_NOTICE "adi_adrv9001_Rx_GainTable_Read parameter 'gainTableRows' read back as '");
-	printk(KERN_NOTICE "{ { \n\t\trxFeGain: %lu, \n\t\textControl: %lu, \n\t\tadcTiaGain: %lu, \n\t\tdigGain: %ld, \n\t\tphaseOffset: %lu\n }", calibrate_gainTableRows_10[0]);
+	// printf("adi_adrv9001_Rx_GainTable_Read parameter 'gainTableRows' read back as '");
+	// printf("{ { \n\t\trxFeGain: %lu, \n\t\textControl: %lu, \n\t\tadcTiaGain: %lu, \n\t\tdigGain: %ld, \n\t\tphaseOffset: %lu\n }", calibrate_gainTableRows_10[0]);
 	int32_t calibrate_gainTableRows_10_indexer = 1;
 	for (calibrate_gainTableRows_10_indexer = 1; calibrate_gainTableRows_10_indexer < 69; calibrate_gainTableRows_10_indexer++)
 	{
-		printk(KERN_NOTICE ", { \n\t\trxFeGain: %lu, \n\t\textControl: %lu, \n\t\tadcTiaGain: %lu, \n\t\tdigGain: %ld, \n\t\tphaseOffset: %lu\n }", calibrate_gainTableRows_10[calibrate_gainTableRows_10_indexer]);
+		// printf(", { \n\t\trxFeGain: %lu, \n\t\textControl: %lu, \n\t\tadcTiaGain: %lu, \n\t\tdigGain: %ld, \n\t\tphaseOffset: %lu\n }", calibrate_gainTableRows_10[calibrate_gainTableRows_10_indexer]);
 	}
-	printk(KERN_NOTICE " }\n");
+	// printf(" }\n");
 
-	printk(KERN_NOTICE "adi_adrv9001_Rx_GainTable_Read parameter 'numGainIndicesRead' read back as '%lu' \n", numGainIndicesRead_10);
+	// printf("adi_adrv9001_Rx_GainTable_Read parameter 'numGainIndicesRead' read back as '%lu' \n", numGainIndicesRead_10);
 	ADI_HANDLE_ERROR(error_code);
 
 	error_code = adi_adrv9001_Tx_DataPath_Loopback_Set(adrv9001Device_0, ADI_CHANNEL_1, false);
@@ -157,7 +157,7 @@ int calibrate(adi_adrv9001_Device_t * adrv9001Device_0)
 	error_code = adi_adrv9001_Ssi_Loopback_Set(adrv9001Device_0, ADI_CHANNEL_2, ADI_ADRV9001_SSI_TYPE_LVDS, false);
 	ADI_HANDLE_ERROR(error_code);
 
-	printk(KERN_NOTICE "%s", "Calibrations complete.");
+	// printf("%s", "Calibrations complete.");
 	ADI_HANDLE_ERROR(error_code);
 
 

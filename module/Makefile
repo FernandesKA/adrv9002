@@ -6,7 +6,14 @@ MODULE_NAME := adrv9002
 KERNEL_SRC ?= $(KERNELDIR)
 CROSS_COMPILE ?= $(CC)
 ARCH ?= arm
-EXTRA_CFLAGS += -g
+EXTRA_CFLAGS += -O2 -g0
+# Suppress mixed declarations warnings across all sources (incl. subdirs)
+EXTRA_CFLAGS += -Wno-declaration-after-statement
+EXTRA_CFLAGS += -DADI_COMPILED_LOGLEVEL=ADI_LOGLEVEL_WARN
+
+# Remove any debug flags injected by the kernel config when building this module
+KBUILD_CFLAGS := $(filter-out -g%,$(KBUILD_CFLAGS))
+KBUILD_CFLAGS_MODULE := $(filter-out -g%,$(KBUILD_CFLAGS_MODULE))
 
 ifeq ($(KERNEL_SRC),)
     KERNEL_SRC := /lib/modules/$(shell uname -r)/build
@@ -15,7 +22,10 @@ endif
 PWD := $(shell pwd)
 
 adrv9002_drv-y += adrv9002.o
+adrv9002_drv-y += adrv9002_radio.o
 adrv9002_drv-y += adrv9002_hal.o
+adrv9002_drv-y += adrv9002_log_buffer.o
+adrv9002_drv-y += lna.o
 adrv9002_drv-y += platforms/linux_platform.o
 adrv9002_drv-y += third_party/jsmn/jsmn.o
 adrv9002_drv-y += common/adi_common_log.o
@@ -52,10 +62,10 @@ adrv9002_drv-y += devices/adrv9001/public/src/adi_adrv9001_fh.o
 adrv9002_drv-y += devices/adrv9001/public/src/adi_adrv9001_powermanagement.o
 adrv9002_drv-y += devices/adrv9001/public/src/adi_adrv9001_powersavingandmonitormode.o
 adrv9002_drv-y += devices/adrv9001/public/src/adi_adrv9001_profileutil.o
-adrv9002_drv-y += tes/beginReceiving.o
-adrv9002_drv-y += tes/beginTransmitting.o
-adrv9002_drv-y += tes/beginTransmittingiqData2.o
-adrv9002_drv-y += tes/beginTransmittingiqData4.o
+adrv9002_drv-y += tes/begin_receiving.o
+adrv9002_drv-y += tes/begin_transmitting.o
+adrv9002_drv-y += tes/begin_transmitting_iq_data2.o
+adrv9002_drv-y += tes/begin_transmitting_iq_data4.o
 adrv9002_drv-y += tes/calibrate.o
 adrv9002_drv-y += tes/calibrategainTableRows8.o
 adrv9002_drv-y += tes/calibrategainTableRows10.o
@@ -74,10 +84,9 @@ adrv9002_drv-y += tes/initializegainTableRows15.o
 adrv9002_drv-y += tes/initializegainTableRows16.o
 adrv9002_drv-y += tes/initializegainTableRows17.o
 adrv9002_drv-y += tes/initializegpioCtrlInitCfg26.o
-adrv9002_drv-y += tes/initializeinit8.o
 adrv9002_drv-y += tes/prime.o
-adrv9002_drv-y += tes/stopReceiving.o
-adrv9002_drv-y += tes/stopTransmitting.o
+adrv9002_drv-y += tes/stop_receiving.o
+adrv9002_drv-y += tes/stop_transmitting.o
 
 obj-m += adrv9002_drv.o
 

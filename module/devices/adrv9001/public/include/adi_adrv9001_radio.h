@@ -541,6 +541,11 @@ int32_t adi_adrv9001_Radio_PfirWbNbCompChFilter_Set(adi_adrv9001_Device_t *adrv9
 		                                            adi_adrv9001_PfirBank_e bankSel, adi_common_Port_e port,
 	                                                adi_common_ChannelNumber_e channel);
 
+
+int32_t adi_adrv9001_Radio_Channel_ToPrimed(adi_adrv9001_Device_t *adrv9001,
+						   adi_common_Port_e port,
+						   adi_common_ChannelNumber_e channel);
+
 #ifdef __cplusplus
 }
 #endif

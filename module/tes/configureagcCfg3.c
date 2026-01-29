@@ -6,6 +6,7 @@
 #include "adi_adrv9001_rx.h"
 #include "adi_adrv9001_rx_gaincontrol.h"
 #include "adi_adrv9001_tx.h"
+#include <linux/types.h>
 adi_adrv9001_GainControlCfg_t configure_agcCfg_3 = { 
 		.peakWaitTime = 4, 
 		.maxGainIndex = 255, 
