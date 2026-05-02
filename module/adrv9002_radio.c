@@ -26,9 +26,6 @@ static void log_arm_error(struct adrv9002_priv *priv, const char *context, int e
     
   err = &priv->adrv9001Device->common.error;
   
-  /* Freeze detailed log buffer on first fatal error to preserve context */
-  adrv9002_log_buffer_freeze(&priv->log_buffer);
-
   dev_err(&priv->spi->dev, "%s failed with code %d\n", context, error_code);
   dev_err(&priv->spi->dev, "  ARM Error: src=0x%x, code=0x%x, action=%d\n",
           err->errSource, err->errCode, err->newAction);
@@ -63,9 +60,6 @@ static int wait_for_channel_state(struct adrv9002_priv *priv,
     return ret;
   }
   
-  ADRV9002_DETAILED_LOG(priv, "Wait for state: port=%d ch=%d, current=%d, desired=%d\n",
-                        port, channel, state, desired);
-  
   if (state == desired)
     return 0;
 
@@ -82,16 +76,10 @@ static int wait_for_channel_state(struct adrv9002_priv *priv,
     
     /* Log state changes */
     if (state != prev_state) {
-      s64 elapsed_us = ktime_us_delta(ktime_get(), start_time);
-      ADRV9002_DETAILED_LOG(priv, "State transition: %d->%d after %lld us\n",
-                            prev_state, state, elapsed_us);
       prev_state = state;
     }
     
     if (state == desired) {
-      s64 elapsed_us = ktime_us_delta(ktime_get(), start_time);
-      ADRV9002_DETAILED_LOG(priv, "Reached state=%d after %d iters, %lld us\n", 
-                            desired, max_iters - counter - 1, elapsed_us);
       return 0;
     }
     
@@ -254,9 +242,6 @@ int adrv9002_set_frequency(struct adrv9002_priv *priv,
   }
 
   prev_freq = (freq->channel < 2) ? priv->lo_freq[freq->channel] : 0;
-  if (verbose)
-    ADRV9002_DETAILED_LOG(priv, "=== SET_FREQ START: ch%u port%u: %llu Hz (prev: %llu Hz) ===\n",
-                          freq->channel, freq->port, freq->freq_hz, prev_freq);
 
   adi_adrv9001_ChannelState_e ch_state;
   channel = ADI_CHANNEL_1;
@@ -317,8 +302,6 @@ int adrv9002_set_frequency(struct adrv9002_priv *priv,
   }
   }
 
-  if (verbose)
-    ADRV9002_DETAILED_LOG(priv, "Step 1: Waiting for PRIMED state...\n");
   {
     int sleep_base = adrv9002_freq_change_timeout_us / 10; /* smaller polling granularity */
     if (sleep_base < 50) sleep_base = 50; /* 50us minimum */
@@ -343,8 +326,6 @@ int adrv9002_set_frequency(struct adrv9002_priv *priv,
   }
 
   /* Wait for CALIBRATED state */
-  if (verbose)
-    ADRV9002_DETAILED_LOG(priv, "Step 3: Waiting for CALIBRATED state...\n");
   {
     int sleep_base = adrv9002_freq_change_timeout_us / 10;
     if (sleep_base < 50) sleep_base = 50;
@@ -359,8 +340,6 @@ int adrv9002_set_frequency(struct adrv9002_priv *priv,
   }
 
   /* Configure carrier */
-  if (verbose)
-    ADRV9002_DETAILED_LOG(priv, "Step 4: Configuring carrier to %llu Hz...\n", freq->freq_hz);
   
   /* Verify ARM health before critical carrier configuration */
   ret = adi_adrv9001_arm_StartStatus_Check(priv->adrv9001Device, 50000);
@@ -408,8 +387,6 @@ int adrv9002_set_frequency(struct adrv9002_priv *priv,
     return -EAGAIN;
   }
 
-  if (verbose)
-    ADRV9002_DETAILED_LOG(priv, "Step 5: Priming channel...\n");
   ret = adi_adrv9001_Radio_Channel_Prime(priv->adrv9001Device, freq->port,
                                          channel, true);
   if (ret) {
@@ -476,8 +453,6 @@ int adrv9002_set_frequency(struct adrv9002_priv *priv,
   }
 
   /* Wait for PRIMED state before enabling RF */
-  if (verbose)
-    ADRV9002_DETAILED_LOG(priv, "Step 6: Waiting for PRIMED state after prime...\n");
   {
     int sleep_base = adrv9002_freq_change_timeout_us / 10;
     if (sleep_base < 50) sleep_base = 50;
@@ -492,8 +467,6 @@ int adrv9002_set_frequency(struct adrv9002_priv *priv,
   }
 
   /* Enable RF */
-  if (verbose)
-    ADRV9002_DETAILED_LOG(priv, "Step 7: Enabling RF...\n");
   ret = adi_adrv9001_Radio_Channel_EnableRf(priv->adrv9001Device, freq->port,
                                             channel, true);
   if (ret) {
@@ -505,9 +478,6 @@ int adrv9002_set_frequency(struct adrv9002_priv *priv,
   if (ret == 0) {
     priv->lo_freq[freq->channel] = freq->freq_hz;
     s64 total_time_us = ktime_us_delta(ktime_get(), start_time);
-    if (verbose)
-      ADRV9002_DETAILED_LOG(priv, "=== SET_FREQ SUCCESS: %llu Hz in %lld us ===\n",
-                            freq->freq_hz, total_time_us);
     ADRV9002_LOG_INFO(priv, "Frequency set ch%u: %llu Hz (%lld us)\n",
                       freq->channel, freq->freq_hz, total_time_us);
   }

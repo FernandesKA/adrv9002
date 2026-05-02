@@ -24,7 +24,6 @@ PWD := $(shell pwd)
 adrv9002_drv-y += adrv9002.o
 adrv9002_drv-y += adrv9002_radio.o
 adrv9002_drv-y += adrv9002_hal.o
-adrv9002_drv-y += adrv9002_log_buffer.o
 adrv9002_drv-y += lna.o
 adrv9002_drv-y += platforms/linux_platform.o
 adrv9002_drv-y += third_party/jsmn/jsmn.o

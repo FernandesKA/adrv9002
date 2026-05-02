@@ -29,19 +29,10 @@ extern int adrv9002_freq_change_timeout_us;
 extern int adrv9002_prime_retry_count;
 extern bool adrv9002_detailed_logs;
 
-#include "adrv9002_log_buffer.h"
-
 #define ADRV9002_LOG_INFO(priv, fmt, ...)                                     \
     do {                                                                        \
         if (adrv9002_verbose_logs)                                                \
             dev_info(&(priv)->spi->dev, fmt, ##__VA_ARGS__);                        \
-    } while (0)
-
-#define ADRV9002_DETAILED_LOG(priv, fmt, ...)                                 \
-    do {                                                                        \
-        if (adrv9002_log_buffer_is_enabled(&(priv)->log_buffer)) {             \
-            adrv9002_log_buffer_write((priv), fmt, ##__VA_ARGS__);              \
-        }                                                                       \
     } while (0)
 
 #define ADRV9002_LOG_DEV(dev, fmt, ...)                                       \
@@ -86,11 +77,9 @@ struct adrv9002_priv
     size_t saved_stream_buf_len;
     atomic_t reinit_count; /* tracks number of auto-reinits */
     struct mutex lock;
-    struct adrv9002_log_buffer log_buffer;
     struct adrv9002_reset_config *reset_config; /* stored for hw reset operations */
-    uint32_t canary;
 };
 
-#define ADRV9002_PRIV_CANARY 0xDEADBEEF
+#define ADRV9002_PRIV_MAGIC 0xAD900201
 
  #endif // ADRV9002_H
