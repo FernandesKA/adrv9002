@@ -489,10 +489,7 @@ static long adrv9002_ioctl(struct file *filp, unsigned int cmd,
 
         if (!priv->adrv9001Device)
         {
-            if (adrv9002_validate_priv(priv))
-                dev_err(&priv->spi->dev, "Device not initialized\n");
-            else
-                pr_err("adrv9002: Device not initialized\n");
+            dev_err(&priv->spi->dev, "Device not initialized\n");
             ret = -ENODEV;
             break;
         }
@@ -550,10 +547,7 @@ static long adrv9002_ioctl(struct file *filp, unsigned int cmd,
         adrv9002_free_device(priv);
         memset(priv->lo_freq, 0, sizeof(priv->lo_freq));
         memset(priv->gain, 0, sizeof(priv->gain));
-        if (adrv9002_validate_priv(priv))
-            dev_info(&priv->spi->dev, "Device reset\n");
-        else
-            pr_info("adrv9002: Device reset\n");
+        dev_info(&priv->spi->dev, "Device reset\n");
         break;
 
         case ADRV9002_IOC_LNA_ENABLE:
@@ -594,10 +588,7 @@ static long adrv9002_ioctl(struct file *filp, unsigned int cmd,
 
 
     default:
-        if (adrv9002_validate_priv(priv))
-            dev_err(&priv->spi->dev, "Unknown ioctl: 0x%x\n", cmd);
-        else
-            pr_err("adrv9002: Unknown ioctl: 0x%x\n", cmd);
+        pr_err("adrv9002: Unknown ioctl: 0x%x\n", cmd);
         ret = -ENOTTY;
     }
 

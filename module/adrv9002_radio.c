@@ -315,8 +315,6 @@ int adrv9002_set_frequency(struct adrv9002_priv *priv,
     return ret;
   }
 
-  if (verbose)
-    ADRV9002_DETAILED_LOG(priv, "Step 2: Unpriming channel...\n");
   ret = adi_adrv9001_Radio_Channel_Prime(priv->adrv9001Device, freq->port,
                                          channel, false);
   if (ret) {
